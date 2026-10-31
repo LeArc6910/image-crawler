@@ -80,7 +80,7 @@ def test_index_flushes_in_segments_and_dedupes(tmp_path, key_file):
     assert len(list(archive.storage.list(layout.INDEX))) == 3
     entries = archive.read_index()
     assert [e["object"] for e in entries] == names
-    assert entries[0]["filename"] == "0.jpg"  # first entry wins
+    assert entries[0]["filename"] == "again.jpg"  # the latest entry wins, in the first one's place
 
 
 def test_reindex_backfills_images_missing_from_index(tmp_path, key_file, capsys):

@@ -61,6 +61,12 @@ class State:
     def seen_url(self, url: str) -> bool:
         return self.db.execute("SELECT 1 FROM images WHERE url = ?", (url,)).fetchone() is not None
 
+    def url_record(self, url: str) -> tuple[str | None, str, str] | None:
+        """(object name, page URL, status) recorded for an image URL."""
+        return self.db.execute(
+            "SELECT object_name, page_url, status FROM images WHERE url = ?", (url,)
+        ).fetchone()
+
     def record_url(
         self, url: str, status: str, object_name: str | None, page_url: str, site: str
     ) -> None:

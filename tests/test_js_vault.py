@@ -26,6 +26,10 @@ def test_vault_js_opens_python_archive(tmp_path, key_file):
     for i, photo in enumerate(photos):
         archive.store(photo, {"source_url": f"https://example.com/한글-{i}", "site": "https://example.com/"})
     archive.flush()
+    # A later entry for the same object (an image moved into its album) replaces the first one.
+    first = archive.read_index()[0]["object"]
+    archive.add_to_index(first, photos[0], {"source_url": "https://example.com/한글-0", "album": "앨범", "position": 1})
+    archive.flush()
 
     master = base64.b64encode(load_key_file(key_file)).decode()
     result = subprocess.run(
@@ -34,6 +38,7 @@ def test_vault_js_opens_python_archive(tmp_path, key_file):
     out = json.loads(result.stdout)
 
     assert out["entries"] == archive.read_index()
+    assert len(out["entries"]) == 3 and out["entries"][0]["album"] == "앨범"
     assert [i["sha256"] for i in out["images"]] == [hashlib.sha256(p).hexdigest() for p in photos]
     assert [i["source_url"] for i in out["images"]] == [f"https://example.com/한글-{i}" for i in range(3)]
     assert out["images"][0]["thumbBytes"] > 0 and out["images"][2]["thumbBytes"] is None

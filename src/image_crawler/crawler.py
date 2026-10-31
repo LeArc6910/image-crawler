@@ -170,6 +170,7 @@ class CrawlStats:
     errors: int = 0
     albums_done: int = 0     # album pages finished in an earlier run, not fetched again
     albums_finished: int = 0
+    regrouped: int = 0       # images found earlier on a non-album page, now filed under their album
 
     def __iadd__(self, other: "CrawlStats") -> "CrawlStats":
         for name in self.__dataclass_fields__:
@@ -259,6 +260,7 @@ class Crawler:
         self.archive = archive
         self.state = state
         self.stop_reason: str | None = None  # set when a quota stops the run
+        self.redo_albums = False  # open finished albums again (e.g. after a rule now finds more photos)
         self.fetcher = fetcher or Fetcher(settings)
 
     def crawl_site(self, site_url: str) -> CrawlStats:
@@ -290,7 +292,7 @@ class Crawler:
                 continue
             visited.add(page_url)
             is_album = rule is not None and rule.is_album(page_url)
-            if is_album and self.state.album_done(page_url):
+            if is_album and not self.redo_albums and self.state.album_done(page_url):
                 stats.albums_done += 1
                 continue
             if not self.fetcher.allowed(page_url):
@@ -312,12 +314,19 @@ class Crawler:
                 image_selector=rule.album_images if is_album and rule else "",
                 title_selector=rule.title if rule else "",
             )
+            if is_album and rule and rule.album_list:
+                if listed := rule.listed_images(resp.text, resp.url):
+                    page.images = listed
+                else:
+                    log.warning("album list not found on %s; using the images shown on the page", page_url)
             log.info("page %s: %d image(s), %d link(s)", page_url, len(page.images), len(page.links))
 
             if is_album or rule is None or rule.other_images:
                 errors_before = stats.errors
                 for position, image_url in enumerate(page.images, 1):
                     stats.images_found += 1
+                    if is_album and self._regroup(image_url, page_url, site_url, rule, page.title, position):
+                        stats.regrouped += 1
                     self._process_image(image_url, page_url, site_url, stats, page.title, position)
                 if is_album and stats.errors == errors_before:
                     self.state.finish_album(page_url, page.title, len(page.images))
@@ -332,6 +341,30 @@ class Crawler:
                         and (rule is None or rule.follows(link))
                     ):
                         queue.append((link, depth + 1))
+
+    def _regroup(self, url: str, page_url: str, site_url: str, rule, album: str, position: int) -> bool:
+        """File an image stored earlier from a non-album page (e.g. a list page's cover) under
+        this album: a new index entry replaces the old one (readers keep the latest)."""
+        record = self.state.url_record(url)
+        if record is None:
+            return False
+        name, previous_page, status = record
+        if not name or status not in ("stored", "duplicate") or previous_page == page_url:
+            return False
+        if rule.is_album(previous_page):
+            return False  # the same photo in two albums stays in the first
+        try:
+            opened = self.archive.open_image(name)
+            metadata = {**opened.metadata, "page_url": page_url, "site": site_url, "album": album or None,
+                        "position": position, "fetched_at": datetime.now(timezone.utc).isoformat()}
+            self.archive.add_to_index(name, opened.content, metadata)
+        except QuotaExceeded:
+            raise
+        except Exception as e:
+            log.warning("could not move %s into its album: %s", url, e)
+            return False
+        self.state.record_url(url, status, name, page_url, site_url)
+        return True
 
     def _download_image(self, url: str) -> tuple[bytes, str] | None:
         """Fetch an image, enforcing size limits. Returns (bytes, mime) or None if skipped."""

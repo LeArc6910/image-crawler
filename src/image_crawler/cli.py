@@ -176,6 +176,7 @@ def cmd_crawl(args, cfg) -> int:
                 print(f"R2 quota already reached ({', '.join(over)}); not crawling. See `image-crawler usage`.")
                 return EXIT_QUOTA
         crawler = Crawler(cfg.crawl, archive, state)
+        crawler.redo_albums = args.redo_albums
         log.info("storing to %s", storage.describe())
 
         total = CrawlStats()
@@ -223,6 +224,8 @@ def _format_stats(s: CrawlStats) -> str:
     )
     if s.albums_finished or s.albums_done:
         text += f"; albums: {s.albums_finished} finished, {s.albums_done} done earlier (not fetched)"
+    if s.regrouped:
+        text += f", {s.regrouped} earlier image(s) moved into their album"
     return text
 
 
@@ -501,6 +504,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--site", action="append", help="crawl only this URL (repeatable)")
     p.add_argument("--max-depth", type=int, help="override crawl.max_depth")
     p.add_argument("--max-pages", type=int, help="override crawl.max_pages_per_site")
+    p.add_argument("--redo-albums", action="store_true",
+                   help="open albums finished in earlier runs again (only photos not seen yet are downloaded)")
     p.set_defaults(func=cmd_crawl)
 
     p = sub.add_parser("restore", help="download and decrypt stored images")

@@ -267,3 +267,56 @@ def test_bad_rule_is_rejected(tmp_path):
     config.write_text('[[crawl.rules]]\nhost = "x.com"\nalbum_images = "img[[["\n')
     with pytest.raises(ValueError, match="bad CSS selector"):
         load_config(config)
+
+
+def test_album_list_in_page_data_gets_photos_behind_more_button(site, tmp_path, key_file, capsys):
+    # The page shows 2 photos; its data (escaped JSON, as React server payloads are) lists all 4.
+    photos = {f"/img/{c}.png": make_png(1500 + i) for i, c in enumerate("abcd")}
+    for path, data in photos.items():
+        site.image(path, data)
+    site.page("/list/1", '<a href="/album/1">x</a>')
+    payload = '\\"images\\":[\\"a\\",\\"b\\",\\"c\\",\\"d\\"],\\"title\\":\\"x\\"'
+    site.page("/album/1", f'<h1>Full</h1><img class="photo" src="/img/a.png"><img class="photo" src="/img/b.png">'
+                          f'<a class="more">More</a><script>self.__next_f.push([1,"{payload}"])</script>')
+    shown_only = album_rule()
+    crawler, archive = make_crawler(tmp_path, key_file, rules=[shown_only])
+    assert crawler.crawl_site(site.url + "/list/1").stored == 2
+
+    # With the list rule, --redo-albums reopens the finished album and adds what was hidden.
+    crawler.settings.rules = [album_rule(album_list=r'\\"images\\":\[(.*?)\]', album_item=r'\\"(\w+)\\"',
+                                         album_url=site.url + "/img/{}.png")]
+    assert crawler.crawl_site(site.url + "/list/1").albums_done == 1
+    crawler.redo_albums = True
+    again = crawler.crawl_site(site.url + "/list/1")
+    assert again.stored == 2 and again.already_seen == 2
+    archive.flush()
+    entries = sorted(archive.read_index(), key=lambda e: e["position"])
+    assert [(e["position"], e["source_url"].rsplit("/", 1)[1]) for e in entries] == [
+        (1, "a.png"), (2, "b.png"), (3, "c.png"), (4, "d.png")
+    ]
+    assert {e["album"] for e in entries} == {"Full"}
+
+
+def test_album_list_missing_falls_back_to_shown_images(site, tmp_path, key_file):
+    album_site(site)
+    rule = album_rule(album_list=r'"images":\[(.*?)\]', album_item=r'"(\w+)"')
+    crawler, _ = make_crawler(tmp_path, key_file, rules=[rule])
+    assert crawler.crawl_site(site.url + "/list/1").stored == 6
+
+
+def test_cover_stored_from_a_list_page_moves_into_its_album(site, tmp_path, key_file):
+    album_site(site)
+    site.page("/list/1", '<title>List</title><img src="/img/a1-1.png"><a href="/album/1">x</a>')
+    crawler, archive = make_crawler(tmp_path, key_file, max_depth=0)
+    assert crawler.crawl_site(site.url + "/list/1").stored == 1  # stored as a list-page image
+
+    crawler.settings.rules = [album_rule()]
+    stats = crawler.crawl_site(site.url + "/list/1")
+    assert stats.regrouped == 1 and stats.stored >= 1
+    archive.flush()
+    album1 = [e for e in archive.read_index() if e["page_url"].endswith("/album/1")]
+    assert sorted((e["position"], e["album"]) for e in album1) == [(1, "Album number 1"), (2, "Album number 1")]
+    assert not [e for e in archive.read_index() if e["page_url"].endswith("/list/1")]
+    # Running again finds nothing more to move.
+    crawler.redo_albums = True
+    assert crawler.crawl_site(site.url + "/list/1").regrouped == 0

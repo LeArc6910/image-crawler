@@ -84,17 +84,15 @@ export function indexSegmentId(key) {
 /** Decrypt index segments ({ key, blob } pairs) into entries, oldest segment first, deduped. */
 export async function readIndex(key, segments) {
   const sorted = [...segments].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  const seen = new Set();
+  const where = new Map(); // object → position; a later entry for it replaces the earlier one
   const entries = [];
   for (const { key: objectKey, blob } of sorted) {
     const segment = indexSegmentId(objectKey);
     if (segment === null) continue;
     const { content } = await openBlob(key, blob, { kind: KIND_INDEX, name: segment });
     for (const entry of JSON.parse(utf8.decode(content)).entries) {
-      if (!seen.has(entry.object)) {
-        seen.add(entry.object);
-        entries.push(entry);
-      }
+      if (where.has(entry.object)) entries[where.get(entry.object)] = entry;
+      else { where.set(entry.object, entries.length); entries.push(entry); }
     }
   }
   return entries;

@@ -110,7 +110,7 @@ class Archive:
         """Merge all index segments into as few as possible. Returns (segments before, after).
 
         New segments are written before old ones are deleted, so a crash in between only
-        leaves duplicate entries (which readers drop). Segments that appear while this runs
+        leaves duplicate entries (readers keep one per object). Segments that appear while this runs
         (a concurrent crawl) are left alone.
         """
         self.flush()
@@ -140,16 +140,19 @@ class Archive:
         return sorted(k for k in self.storage.list(layout.INDEX) if layout.index_segment_id(k))
 
     def read_index(self) -> list[dict]:
-        """All index entries, oldest segment first. Later duplicates of an object are dropped."""
+        """All index entries, oldest segment first. When an object appears more than once, the
+        latest entry wins (it keeps the first one's place): that is how an image moves folders."""
         return self._read_segments(self.segment_keys())
 
     def _read_segments(self, keys: list[str]) -> list[dict]:
-        entries, seen = [], set()
+        entries, where = [], {}
         for key in keys:
             segment = layout.index_segment_id(key)
             opened = self.vault.open(self.storage.get(key), kind=KIND_INDEX, name=segment)
             for entry in json.loads(opened.content)["entries"]:
-                if entry["object"] not in seen:
-                    seen.add(entry["object"])
+                if entry["object"] in where:
+                    entries[where[entry["object"]]] = entry
+                else:
+                    where[entry["object"]] = len(entries)
                     entries.append(entry)
         return entries

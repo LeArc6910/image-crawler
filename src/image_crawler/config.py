@@ -21,6 +21,13 @@ class SiteRule:
     follow: list[str] = field(default_factory=list)  # only follow matching links (empty = all on the host)
     album_pages: str = ""        # pages that are albums; an album finished once isn't fetched again
     album_images: str = ""       # CSS selector for an album page's own images (empty = every image on it)
+    # Album pages that show only the first photos and reveal the rest with a "More" button
+    # usually carry the whole list in the page's data. album_list is a regex searched in the
+    # page source whose group 1 (or whole match) holds that list; album_item picks each entry
+    # out of it; album_url turns an entry into an image URL ("{}" = the entry).
+    album_list: str = ""
+    album_item: str = ""
+    album_url: str = ""
     title: str = ""              # CSS selector for the folder name (empty = the first <h1>, else <title>)
     other_images: bool = True    # also store images found on pages that aren't albums
     max_depth: int | None = None  # overrides crawl.max_depth (list pages chain, so it may need to be large)
@@ -31,7 +38,9 @@ class SiteRule:
             raise ValueError("[[crawl.rules]] needs host")
         if isinstance(self.follow, str):
             self.follow = [self.follow]
-        for pattern in [*self.follow, self.album_pages]:
+        if self.album_list and not self.album_item:
+            raise ValueError(f"[[crawl.rules]] {self.host}: album_list needs album_item")
+        for pattern in [*self.follow, self.album_pages, self.album_list, self.album_item]:
             try:
                 re.compile(pattern)
             except re.error as e:
@@ -54,6 +63,19 @@ class SiteRule:
 
     def follows(self, url: str) -> bool:
         return not self.follow or any(self._matches(p, url) for p in self.follow)
+
+    def listed_images(self, html: str, base_url: str) -> list[str]:
+        """Image URLs from the album's own list in the page source (empty if not found)."""
+        from urllib.parse import urljoin
+
+        if not self.album_list or not (match := re.search(self.album_list, html, re.S)):
+            return []
+        text = match.group(1) if match.re.groups else match.group(0)
+        urls = []
+        for found in re.finditer(self.album_item, text):
+            item = (found.group(1) if found.re.groups else found.group(0)).replace("\\/", "/")
+            urls.append(self.album_url.replace("{}", item) if self.album_url else urljoin(base_url, item))
+        return list(dict.fromkeys(urls))
 
     def is_album(self, url: str) -> bool:
         return bool(self.album_pages) and self._matches(self.album_pages, url)
