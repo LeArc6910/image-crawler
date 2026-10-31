@@ -58,6 +58,31 @@ export async function signRequest({ method, url, headers = {}, region, service =
   return out;
 }
 
+/**
+ * Stops runaway request loops (a bug, a stuck retry) before they cost money: at most `max`
+ * requests per rolling `windowMs`. Normal browsing stays far below the default.
+ */
+export class RequestBudget {
+  constructor({ max = 3000, windowMs = 10 * 60 * 1000, now = () => Date.now() } = {}) {
+    Object.assign(this, { max, windowMs, now });
+    this.times = [];
+  }
+
+  take() {
+    const t = this.now();
+    while (this.times.length && this.times[0] <= t - this.windowMs) this.times.shift();
+    if (this.times.length >= this.max) throw new BudgetExceeded(this.times[0] + this.windowMs - t);
+    this.times.push(t);
+  }
+}
+
+export class BudgetExceeded extends Error {
+  constructor(retryInMs) {
+    super("request budget exceeded");
+    this.retryInMs = retryInMs;
+  }
+}
+
 export class S3Error extends Error {
   constructor(status, code, message) {
     super(`${status} ${code || ""} ${message || ""}`.trim());
@@ -79,9 +104,11 @@ const decodeXml = (s) => s.replace(/&(lt|gt|quot|apos|amp|#(\d+)|#x([0-9a-f]+));
  * Keys passed to get()/list() are relative to `prefix`, like the crawler's storage keys.
  */
 export class S3Client {
-  constructor(config, fetchImpl = globalThis.fetch.bind(globalThis)) {
+  constructor(config, { fetch: fetchImpl = globalThis.fetch.bind(globalThis), budget = new RequestBudget() } = {}) {
     this.c = config;
     this.fetch = fetchImpl;
+    this.budget = budget;
+    this.requests = 0;
   }
 
   objectUrl(key = "") {
@@ -90,6 +117,8 @@ export class S3Client {
   }
 
   async request(url, init = {}) {
+    this.budget.take();
+    this.requests++;
     const headers = await signRequest({
       method: "GET", url, headers: init.headers || {}, region: this.c.region,
       accessKeyId: this.c.accessKeyId, secretAccessKey: this.c.secretAccessKey,

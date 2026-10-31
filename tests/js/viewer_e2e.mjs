@@ -4,7 +4,7 @@
 //                                                      HTTP with SigV4, decrypt index/thumbnails/originals
 import { createHash } from "node:crypto";
 import { openBundle } from "../../pwa/js/keystore.js";
-import { S3Client, signRequest } from "../../pwa/js/s3.js";
+import { BudgetExceeded, RequestBudget, S3Client, signRequest } from "../../pwa/js/s3.js";
 import { INDEX_PREFIX, KIND_IMAGE, KIND_THUMB, imageKey, openBlob, readIndex, thumbKey } from "../../pwa/js/vault.js";
 
 const [mode, ...args] = process.argv.slice(2);
@@ -19,6 +19,20 @@ if (mode === "sigv4") {
     getObject: await sig("https://examplebucket.s3.amazonaws.com/test.txt", { Range: "bytes=0-9" }),
     listObjects: await sig("https://examplebucket.s3.amazonaws.com/?max-keys=2&prefix=J", {}),
   }));
+} else if (mode === "budget") {
+  let now = 0;
+  const budget = new RequestBudget({ max: 3, windowMs: 1000, now: () => now });
+  const log = [];
+  for (const t of [0, 100, 200, 300, 999, 1000, 1100, 1150]) {
+    now = t;
+    try { budget.take(); log.push(`${t}:ok`); } catch (e) { log.push(`${t}:${e instanceof BudgetExceeded ? "blocked " + e.retryInMs : e}`); }
+  }
+  // A client with an exhausted budget refuses before touching the network.
+  let fetched = 0;
+  const s3 = new S3Client({ endpoint: "http://x", region: "auto", bucket: "b", prefix: "", accessKeyId: "a", secretAccessKey: "s" },
+    { fetch: async () => { fetched++; throw new Error("unreachable"); }, budget: new RequestBudget({ max: 0 }) });
+  const refused = await s3.get("k").then(() => false, (e) => e instanceof BudgetExceeded);
+  console.log(JSON.stringify({ log, refused, fetched }));
 } else if (mode === "open") {
   const [bundle, passphrase] = args;
   const { config, encryptionKey } = await openBundle(bundle, passphrase);

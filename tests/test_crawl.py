@@ -135,3 +135,19 @@ def test_rate_limited_responses_are_retried(site, tmp_path, key_file, monkeypatc
     monkeypatch.setattr(crawler.fetcher.session, "get", get)
     assert crawler.crawl_site(site.url + "/").stored == 1
     assert site.hits.count("/busy.png") == 2
+
+
+def test_crawl_auto_compacts_the_index(site, tmp_path, key_file, capsys, monkeypatch):
+    monkeypatch.setattr("image_crawler.cli.AUTO_COMPACT_SEGMENTS", 1)
+    site.page("/a", '<img src="/1.png">')
+    site.page("/b", '<img src="/2.png">')
+    site.image("/1.png", make_png(500))
+    site.image("/2.png", make_png(500))
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'key_file = "{key_file}"\nstate_db = "state.db"\n[crawl]\ndelay_seconds = 0\nmin_image_bytes = 100\n'
+        '[storage.local]\npath = "vault"\n'
+    )
+    assert main(["-c", str(config), "crawl", "--site", site.url + "/a", "--site", site.url + "/b"]) == 0
+    assert "compacted index: 2 segments -> 1" in capsys.readouterr().out
+    assert len(list((tmp_path / "vault" / "index").iterdir())) == 1

@@ -118,3 +118,38 @@ def test_restore_ignores_thumbnails_and_index(tmp_path, key_file):
         out = tmp_path / f"out{len(extra)}"
         assert main(["-c", str(config), "restore", "--out", str(out), *extra]) == 0
         assert [p.read_bytes() for p in out.rglob("*.jpg")] == [photo]
+
+
+def test_compact_merges_segments_and_keeps_entries(tmp_path, key_file, monkeypatch):
+    archive = archive_for(tmp_path, key_file, flush_every=2)
+    names = [archive.store(make_photo(32, 32), meta(f"https://example.com/{i}.jpg")) for i in range(7)]
+    archive.flush()
+    before = archive.read_index()
+    assert len(archive.segment_keys()) == 4
+
+    assert archive.compact() == (4, 1)
+    assert len(archive.segment_keys()) == 1
+    assert archive.read_index() == before
+    assert [e["object"] for e in before] == names
+    assert archive.compact() == (1, 1)  # nothing to do
+
+    monkeypatch.setattr("image_crawler.archive.COMPACT_SEGMENT_SIZE", 3)
+    archive.store(make_photo(32, 32), meta("https://example.com/late.jpg"))  # pending: flushed by compact
+    assert archive.compact() == (2, 3)
+    assert [e["object"] for e in archive.read_index()][:7] == names
+
+
+def test_compact_command_and_restore_limit(tmp_path, key_file, capsys):
+    archive = archive_for(tmp_path, key_file, flush_every=1)
+    for i in range(3):
+        archive.store(make_photo(32, 32), meta(f"https://example.com/{i}.jpg"))
+    config = tmp_path / "config.toml"
+    config.write_text(f'key_file = "{key_file}"\n[storage.local]\npath = "vault"\n')
+
+    assert main(["-c", str(config), "compact"]) == 0
+    assert "index segments: 3 -> 1" in capsys.readouterr().out
+
+    out = tmp_path / "restored"
+    assert main(["-c", str(config), "restore", "--out", str(out), "--limit", "2"]) == 0
+    assert "stopping after --limit 2" in capsys.readouterr().out
+    assert len(list(out.rglob("*.jpg"))) == 2

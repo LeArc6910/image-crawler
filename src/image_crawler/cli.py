@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from image_crawler import layout
-from image_crawler.archive import Archive
+from image_crawler.archive import AUTO_COMPACT_SEGMENTS, Archive
 from image_crawler.config import load_config
 from image_crawler.crawler import Crawler, CrawlStats
 from image_crawler.crypto import KIND_IMAGE, DecryptionError, Vault, generate_key_file
@@ -123,11 +123,37 @@ def cmd_crawl(args, cfg) -> int:
             if crawler.stop_reason:
                 print(f"stopped early: {crawler.stop_reason}")
                 break
+        if not crawler.stop_reason:
+            _auto_compact(archive)
     finally:
         state.close()
     if len(sites) > 1:
         print(f"total: {_format_stats(total)}")
     return EXIT_QUOTA if crawler.stop_reason else 0
+
+
+def _auto_compact(archive: Archive) -> None:
+    """Keep the number of index segments (what the phone downloads on refresh) small."""
+    try:
+        if len(archive.segment_keys()) > AUTO_COMPACT_SEGMENTS:
+            before, after = archive.compact()
+            print(f"compacted index: {before} segments -> {after}")
+    except QuotaExceeded as e:
+        log.warning("index compaction skipped: %s", e)
+
+
+def cmd_compact(args, cfg) -> int:
+    state = State(cfg.state_db)
+    try:
+        archive = Archive(Vault.from_key_file(cfg.key_file), _open_storage(cfg, state))
+        before, after = archive.compact()
+    except QuotaExceeded as e:
+        print(f"stopped: {e}")
+        return EXIT_QUOTA
+    finally:
+        state.close()
+    print(f"index segments: {before} -> {after}")
+    return 0
 
 
 def _format_stats(s: CrawlStats) -> str:
@@ -174,6 +200,9 @@ def cmd_restore(args, cfg) -> int:
 
     restored = failed = existing = 0
     for name, load in items:
+        if args.limit is not None and restored >= args.limit:
+            print(f"stopping after --limit {args.limit}")
+            break
         try:
             opened = vault.open(load(), kind=KIND_IMAGE, name=name)
         except QuotaExceeded as e:
@@ -403,7 +432,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True, help="directory to write decrypted images to")
     p.add_argument("--from-dir", help="decrypt *.bin blobs from a local folder instead of the backend")
     p.add_argument("--site", help="only restore images whose site URL contains this text")
+    p.add_argument("--limit", type=int, help="restore at most this many images (saves downloads)")
     p.set_defaults(func=cmd_restore)
+
+    p = sub.add_parser("compact", help="merge index segments so the viewer loads faster")
+    p.set_defaults(func=cmd_compact)
 
     p = sub.add_parser("reindex", help="add thumbnails/index entries for images missing from the index")
     p.set_defaults(func=cmd_reindex)

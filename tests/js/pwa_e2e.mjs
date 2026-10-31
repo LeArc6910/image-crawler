@@ -13,6 +13,11 @@ page.on("pageerror", (e) => errors.push(String(e)));
 page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
 
 const result = {};
+const r2Requests = [];
+page.on("request", (req) => {
+  const url = req.url();
+  if (req.method() === "GET" && /^https?:/.test(url) && !url.startsWith(appUrl)) r2Requests.push(new URL(req.url()).pathname + new URL(req.url()).search);
+});
 const visible = (id) => page.locator(`#${id}`).isVisible();
 const loadedThumbs = () => page.$$eval(".tile img", (imgs) => imgs.filter((i) => i.complete && i.naturalWidth > 0).length);
 
@@ -64,10 +69,12 @@ try {
   await page.reload();
   result.afterReload = (await visible("lock")) ? "lock" : "other";
   await page.screenshot({ path: `${shots}/4-lock.png` });
+  r2Requests.length = 0;
   await page.fill("#lock-passphrase", passphrase);
   await page.press("#lock-passphrase", "Enter");
-  await page.waitForFunction(() => document.querySelectorAll(".tile img").length > 0);
+  await page.waitForFunction(() => document.querySelectorAll(".tile img").length >= 9);
   result.reunlockedTiles = await page.$$eval(".tile", (t) => t.length);
+  result.requestsOnReopen = [...r2Requests];
   result.storedBundleIsSealed = await page.evaluate(() => new Promise((resolve) => {
     const req = indexedDB.open("image-vault");
     req.onsuccess = () => {

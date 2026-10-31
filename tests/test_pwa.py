@@ -155,6 +155,8 @@ def test_pwa_end_to_end(r2_like, static_server, tmp_path, key_file):
     assert "640×480" in r["viewerMeta"] and "photos.example.com" in r["viewerMeta"]
     assert r["afterLock"] == {"lockVisible": True, "tiles": 0}
     assert r["afterReload"] == "lock" and r["reunlockedTiles"] == 10
+    # Reopening only lists the index; segments and thumbnails come from the encrypted cache.
+    assert len(r["requestsOnReopen"]) == 1 and "list-type=2" in r["requestsOnReopen"][0], r["requestsOnReopen"]
     assert r["storedBundleIsSealed"] is True
     assert r["serviceWorker"] is True
     assert r["errors"] == []

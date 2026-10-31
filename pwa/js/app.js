@@ -3,7 +3,7 @@
 
 import * as db from "./db.js";
 import { BundleError, looksLikeBundle, openBundle } from "./keystore.js";
-import { S3Client, S3Error } from "./s3.js";
+import { BudgetExceeded, RequestBudget, S3Client, S3Error } from "./s3.js";
 import { scanQr } from "./scanner.js";
 import { INDEX_PREFIX, KIND_IMAGE, KIND_THUMB, imageKey, openBlob, readIndex, thumbKey } from "./vault.js";
 
@@ -16,6 +16,7 @@ let session = null; // { s3, key } while unlocked
 let entries = [];   // index entries, newest first
 let shown = [];     // entries after the site filter
 const objectUrls = new Set();
+const budget = new RequestBudget(); // shared across unlocks, so locking doesn't reset it
 
 // --- screens ---------------------------------------------------------------
 
@@ -36,6 +37,9 @@ function describeError(err) {
     if (err.status === 404) return "버킷이나 파일을 찾을 수 없습니다.";
     return `R2 오류: ${err.message}`;
   }
+  if (err instanceof BudgetExceeded) {
+    return `짧은 시간에 요청이 너무 많아 멈췄습니다(요금 보호). ${Math.ceil(err.retryInMs / 60000)}분 뒤 다시 시도하세요.`;
+  }
   if (err instanceof TypeError) return "R2에 연결할 수 없습니다. 네트워크나 버킷 CORS 설정(image-crawler cors)을 확인하세요.";
   return err?.message || String(err);
 }
@@ -50,7 +54,7 @@ async function unlock(text, passphrase, errorEl) {
   const from = errorEl.closest(".screen").id;
   try {
     const { config, encryptionKey } = await openBundle(text, passphrase);
-    session = { s3: new S3Client(config), key: encryptionKey };
+    session = { s3: new S3Client(config, { budget }), key: encryptionKey };
     show("gallery");
     resetIdleTimer();
     await loadGallery();
@@ -101,6 +105,7 @@ for (const [input, button] of [["setup-passphrase", "setup-submit"], ["lock-pass
 $("forget-button").addEventListener("click", async () => {
   if (!confirm("이 기기에 저장된 연결 정보를 지울까요? 다시 QR을 스캔해야 합니다.")) return;
   await db.forgetBundle();
+  await db.clearBlobs();
   show("setup");
 });
 
@@ -124,6 +129,15 @@ $("scan-cancel").addEventListener("click", () => scanAbort?.abort());
 
 // --- gallery -----------------------------------------------------------------
 
+/** Index segments and thumbnails never change once written, so a cached ciphertext is always valid. */
+async function cachedGet(key) {
+  const hit = await db.getBlob(key);
+  if (hit) return hit;
+  const blob = await session.s3.get(key);
+  await db.putBlob(key, blob);
+  return blob;
+}
+
 const siteOf = (e) => { try { return new URL(e.site).host; } catch { return "알 수 없음"; } };
 
 async function loadGallery() {
@@ -132,8 +146,10 @@ async function loadGallery() {
   $("grid").replaceChildren();
   const { s3, key } = session;
   const segmentKeys = await s3.list(INDEX_PREFIX);
+  const live = new Set(segmentKeys);
+  await db.deleteBlobs((await db.cachedKeys(INDEX_PREFIX)).filter((k) => !live.has(k))); // compacted away
   const segments = [];
-  for (const k of segmentKeys) segments.push({ key: k, blob: await s3.get(k) });
+  for (const k of segmentKeys) segments.push({ key: k, blob: await cachedGet(k) });
   entries = (await readIndex(key, segments)).reverse(); // newest first
   entries.sort((a, b) => (b.fetched_at || "").localeCompare(a.fetched_at || ""));
 
@@ -198,7 +214,7 @@ function pumpThumbs() {
 async function loadThumb(tile, entry) {
   const current = session;
   try {
-    const blob = await current.s3.get(thumbKey(entry.thumb));
+    const blob = await cachedGet(thumbKey(entry.thumb));
     const { content } = await openBlob(current.key, blob, { kind: KIND_THUMB, name: entry.thumb });
     if (session !== current) return;
     const img = new Image();
@@ -206,6 +222,7 @@ async function loadThumb(tile, entry) {
     img.src = trackUrl(new Blob([content], { type: "image/webp" }));
     tile.replaceChildren(img);
   } catch (err) {
+    if (err instanceof BudgetExceeded) $("gallery-status").textContent = describeError(err);
     tile.classList.add("failed");
     tile.textContent = "!";
     tile.title = describeError(err);

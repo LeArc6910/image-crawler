@@ -25,6 +25,8 @@ log = logging.getLogger(__name__)
 
 INDEX_VERSION = 1
 FLUSH_EVERY = 100
+COMPACT_SEGMENT_SIZE = 5_000  # entries per segment written by compact()
+AUTO_COMPACT_SEGMENTS = 30  # crawl compacts once the index has more segments than this
 _ENTRY_FIELDS = ("site", "page_url", "source_url", "filename", "content_type", "fetched_at")
 
 
@@ -86,19 +88,43 @@ class Archive:
         """Write queued entries as a new index segment."""
         if not self._pending:
             return None
+        segment = self._write_segment(self._pending)
+        self._pending = []
+        return segment
+
+    def _write_segment(self, entries: list[dict]) -> str:
         segment = new_segment_id()
-        payload = json.dumps({"v": INDEX_VERSION, "entries": self._pending}, ensure_ascii=False)
+        payload = json.dumps({"v": INDEX_VERSION, "entries": entries}, ensure_ascii=False)
         blob = self.vault.seal(
             payload.encode(),
-            {"v": INDEX_VERSION, "count": len(self._pending)},
+            {"v": INDEX_VERSION, "count": len(entries)},
             kind=KIND_INDEX,
             name=segment,
             pad_block=SMALL_PAD_BLOCK,
         )
         self.storage.put(layout.index_key(segment), blob)
-        log.info("wrote index segment %s (%d entries)", segment, len(self._pending))
-        self._pending = []
+        log.info("wrote index segment %s (%d entries)", segment, len(entries))
         return segment
+
+    def compact(self) -> tuple[int, int]:
+        """Merge all index segments into as few as possible. Returns (segments before, after).
+
+        New segments are written before old ones are deleted, so a crash in between only
+        leaves duplicate entries (which readers drop). Segments that appear while this runs
+        (a concurrent crawl) are left alone.
+        """
+        self.flush()
+        keys = self.segment_keys()
+        if len(keys) <= 1:
+            return len(keys), len(keys)
+        entries = self._read_segments(keys)
+        written = [
+            self._write_segment(entries[i : i + COMPACT_SEGMENT_SIZE])
+            for i in range(0, len(entries), COMPACT_SEGMENT_SIZE)
+        ]
+        for key in keys:
+            self.storage.delete(key)
+        return len(keys), len(written)
 
     # --- reading ---------------------------------------------------------
 
@@ -110,13 +136,17 @@ class Archive:
     def open_image(self, name: str) -> Opened:
         return self.vault.open(self.storage.get(layout.image_key(name)), kind=KIND_IMAGE, name=name)
 
+    def segment_keys(self) -> list[str]:
+        return sorted(k for k in self.storage.list(layout.INDEX) if layout.index_segment_id(k))
+
     def read_index(self) -> list[dict]:
         """All index entries, oldest segment first. Later duplicates of an object are dropped."""
+        return self._read_segments(self.segment_keys())
+
+    def _read_segments(self, keys: list[str]) -> list[dict]:
         entries, seen = [], set()
-        for key in sorted(self.storage.list(layout.INDEX)):
+        for key in keys:
             segment = layout.index_segment_id(key)
-            if segment is None:
-                continue
             opened = self.vault.open(self.storage.get(key), kind=KIND_INDEX, name=segment)
             for entry in json.loads(opened.content)["entries"]:
                 if entry["object"] not in seen:

@@ -139,6 +139,16 @@ def test_js_signer_matches_aws_reference_signatures():
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_js_request_budget_blocks_runaway_loops():
+    out = json.loads(subprocess.run([NODE, str(SCRIPT), "budget"], capture_output=True, text=True, check=True).stdout)
+    # 3 requests per rolling second: the 4th and 5th wait, slots free up as old requests age out.
+    assert out["log"] == [
+        "0:ok", "100:ok", "200:ok", "300:blocked 700", "999:blocked 1", "1000:ok", "1100:ok", "1150:blocked 50",
+    ]
+    assert out == {"log": out["log"], "refused": True, "fetched": 0}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_viewer_reads_archive_over_http(moto_server, tmp_path, key_file, monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")

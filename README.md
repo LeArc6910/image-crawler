@@ -31,6 +31,8 @@ image-crawler restore --out ./restored       # 저장소에서 내려받아 복�
 image-crawler restore --out ./restored --from-dir ./downloaded-blobs   # 웹 UI 등으로 받은 *.bin 복호화
 image-crawler remove https://another.example/photos
 image-crawler reindex                        # 인덱스에 빠진 이미지(이전 버전 업로드분, 중단된 실행)의 썸네일·목록 보충
+image-crawler compact                        # 목록 조각 병합 (크롤링 후 30개가 넘으면 자동 실행)
+image-crawler restore --out ./r --limit 20   # 최대 20장만 복원
 image-crawler cors --origin https://you.github.io   # PWA 뷰어 주소에서 버킷을 읽도록 허용 (S3/R2)
 image-crawler usage                          # 이번 달 R2 사용량 / 한도
 image-crawler check                          # 키·자격 증명·버킷 접근을 단계별로 점검
@@ -50,6 +52,8 @@ image-crawler viewer-export                  # 휴대폰 뷰어용 연결 정보
 `pwa/`는 빌드 과정 없는 정적 웹앱입니다. 휴대폰 브라우저 안에서 목록·썸네일·원본을 R2에서 받아 **기기 안에서만**
 복호화합니다. 휴대폰에는 비밀번호로 잠긴 연결 정보만 저장되고, 열 때마다 비밀번호를 입력합니다.
 10분 동안 조작이 없거나 앱이 1분 넘게 백그라운드에 있으면 자동으로 잠깁니다.
+한 번 받은 목록·썸네일은 **암호문 그대로** 휴대폰에 캐시되어, 다시 열 때는 R2에 목록 요청 1회만 보냅니다.
+오류로 요청이 폭주하지 않도록 10분에 3,000회를 넘으면 요청을 멈춥니다.
 
 1. **휴대폰용 R2 토큰 발급**: Cloudflare → R2 → API 토큰 → 해당 버킷 **Object Read only**
 2. **뷰어 배포 (GitHub Pages)**: 저장소 Settings → Pages → Source를 **GitHub Actions**로 설정한 뒤,
