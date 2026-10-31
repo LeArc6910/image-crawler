@@ -175,6 +175,15 @@ def load_config(path: str | Path | None = None) -> Config:
     )
 
 
+def parse_rules(text: str) -> list[SiteRule]:
+    """[[crawl.rules]] (or [[rules]]) tables from TOML text, validated."""
+    data = tomllib.loads(text)
+    rules = data.get("crawl", {}).get("rules", data.get("rules", []))
+    if not isinstance(rules, list) or not rules:
+        raise ValueError("no [[crawl.rules]] tables found")
+    return [_section(SiteRule, rule, "crawl.rules") for rule in rules]
+
+
 def _crawl_settings(data: dict) -> CrawlSettings:
     data = dict(data)
     rules = data.pop("rules", [])

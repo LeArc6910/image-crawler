@@ -320,3 +320,31 @@ def test_cover_stored_from_a_list_page_moves_into_its_album(site, tmp_path, key_
     # Running again finds nothing more to move.
     crawler.redo_albums = True
     assert crawler.crawl_site(site.url + "/list/1").regrouped == 0
+
+
+def test_rules_stored_in_the_crawl_state(site, tmp_path, key_file, capsys):
+    album_site(site)
+    config = tmp_path / "config.toml"
+    config.write_text(f'key_file = "{key_file}"\nstate_db = "state.db"\n'
+                      '[crawl]\ndelay_seconds = 0\nmin_image_bytes = 100\n[storage.local]\npath = "vault"\n')
+    rules = tmp_path / "rules.toml"
+    rules.write_text('''[[crawl.rules]]
+host = "127.0.0.1"
+follow = ['^/list/\\d+$', '^/album/\\d+$']
+album_pages = '^/album/\\d+$'
+album_images = "img.photo"
+other_images = false
+max_depth = 50
+''')
+    assert main(["-c", str(config), "rules"]) == 0
+    assert "no stored rules" in capsys.readouterr().out
+    assert main(["-c", str(config), "rules", "--set", str(rules)]) == 0
+    assert "stored 1 rule(s): 127.0.0.1" in capsys.readouterr().out
+    rules.unlink()  # the crawl uses the copy in the state DB
+    assert main(["-c", str(config), "crawl", "--site", site.url + "/list/1"]) == 0
+    assert "albums: 3 finished" in capsys.readouterr().out
+    assert main(["-c", str(config), "rules"]) == 0
+    assert "album_pages" in capsys.readouterr().out
+    assert main(["-c", str(config), "rules", "--clear"]) == 0
+    assert main(["-c", str(config), "rules"]) == 0
+    assert "no stored rules" in capsys.readouterr().out.splitlines()[-1]

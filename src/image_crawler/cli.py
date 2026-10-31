@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 from image_crawler import layout
 from image_crawler.archive import AUTO_COMPACT_SEGMENTS, Archive
-from image_crawler.config import load_config
+from image_crawler.config import load_config, parse_rules
 from image_crawler.crawler import Crawler, CrawlStats
 from image_crawler.crypto import KIND_IMAGE, DecryptionError, Vault, generate_key_file
 from image_crawler.doctor import explain, run_checks
@@ -81,6 +81,36 @@ def cmd_sites(args, cfg) -> int:
     for url in sites:
         print(url)
     return 0
+
+
+RULES_META = "crawl_rules"  # [[crawl.rules]] TOML kept in the state DB (synced with state_sync)
+
+
+def cmd_rules(args, cfg) -> int:
+    """Keep site rules in the crawl state, so a fresh machine needs only its config basics."""
+    with _session(cfg, storage=False) as (state, _):
+        if args.set:
+            text = Path(args.set).expanduser().read_text()
+            rules = parse_rules(text)
+            state.set_meta(RULES_META, text)
+            print(f"stored {len(rules)} rule(s): {', '.join(r.host for r in rules)}")
+        elif args.clear:
+            state.db.execute("DELETE FROM meta WHERE key = ?", (RULES_META,))
+            state.db.commit()
+            print("stored rules removed")
+        else:
+            text = state.get_meta(RULES_META)
+            print(text.rstrip() if text else "no stored rules (config.toml rules still apply)")
+    return 0
+
+
+def _stored_rules(cfg, state: State) -> None:
+    """Add rules stored with `image-crawler rules --set` for hosts config.toml has no rule for."""
+    text = state.get_meta(RULES_META)
+    if not text:
+        return
+    hosts = {r.host for r in cfg.crawl.rules}
+    cfg.crawl.rules += [r for r in parse_rules(text) if r.host not in hosts]
 
 
 def _quota_applies(cfg, storage: Storage) -> bool:
@@ -169,6 +199,7 @@ def cmd_crawl(args, cfg) -> int:
         if not sites:
             print(f"no sites to crawl; add some with `image-crawler add URL` ({cfg.sites_file})")
             return 1
+        _stored_rules(cfg, state)
         archive = Archive(Vault.load(cfg.key_file), storage)
         if isinstance(storage, GuardedStorage):
             over = [n for n, pct in _percentages(cfg, storage.used).items() if pct >= 100]
@@ -499,6 +530,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("sites", help="list registered sites")
     p.set_defaults(func=cmd_sites)
+
+    p = sub.add_parser("rules", help="show or store per-site crawl rules (kept in the crawl state)")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--set", metavar="FILE", help="store the [[crawl.rules]] tables in this TOML file")
+    g.add_argument("--clear", action="store_true", help="remove the stored rules")
+    p.set_defaults(func=cmd_rules)
 
     p = sub.add_parser("crawl", help="crawl registered sites and upload new images")
     p.add_argument("--site", action="append", help="crawl only this URL (repeatable)")
