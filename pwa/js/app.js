@@ -14,7 +14,7 @@ const THUMB_CONCURRENCY = 6;
 
 let session = null; // { s3, key } while unlocked
 let entries = [];   // index entries, newest first
-let shown = [];     // entries after the site filter
+let shown = [];     // photos in the grid on screen (a folder, or all after the site filter)
 const objectUrls = new Set();
 const budget = new RequestBudget(); // shared across unlocks, so locking doesn't reset it
 
@@ -55,6 +55,8 @@ async function unlock(text, passphrase, errorEl) {
   try {
     const { config, encryptionKey } = await openBundle(text, passphrase);
     session = { s3: new S3Client(config, { budget }), key: encryptionKey };
+    view = { mode: readMode(), folder: null };
+    history.replaceState(null, "");
     show("gallery");
     resetIdleTimer();
     await loadGallery();
@@ -69,7 +71,10 @@ async function unlock(text, passphrase, errorEl) {
 
 function lock() {
   session = null;
-  entries = shown = [];
+  entries = shown = folders = [];
+  pendingTiles = [];
+  view = { mode: view.mode, folder: null };
+  scrollFor.clear();
   $("viewer").close();
   $("grid").replaceChildren();
   for (const url of objectUrls) URL.revokeObjectURL(url);
@@ -139,6 +144,22 @@ async function cachedGet(key) {
 }
 
 const siteOf = (e) => { try { return new URL(e.site).host; } catch { return "알 수 없음"; } };
+const RENDER_CHUNK = 240;
+const OTHER_FOLDER = "기타";
+
+/** Images are grouped by the page they came from; the crawler names that folder (album title). */
+function folderKeyOf(e) { return e.page_url || ""; }
+function folderTitleOf(e) {
+  if (e.album) return e.album;
+  try { const u = new URL(e.page_url); return decodeURIComponent(u.pathname + u.search) || u.host; } catch { return OTHER_FOLDER; }
+}
+
+let folders = [];       // [{ key, title, site, items: [entries in page order], newest }]
+let view = { mode: "folders", folder: null }; // mode: "folders" | "all"; folder: key when inside one
+const scrollFor = new Map(); // view → scroll position, restored when coming back
+
+function readMode() { try { return localStorage.getItem("view-mode") === "all" ? "all" : "folders"; } catch { return "folders"; } }
+function saveMode(mode) { try { localStorage.setItem("view-mode", mode); } catch { /* private mode */ } }
 
 async function loadGallery() {
   const status = $("gallery-status");
@@ -153,40 +174,156 @@ async function loadGallery() {
   entries = (await readIndex(key, segments)).reverse(); // newest first
   entries.sort((a, b) => (b.fetched_at || "").localeCompare(a.fetched_at || ""));
 
+  const byKey = new Map();
+  for (const e of entries) {
+    const k = folderKeyOf(e);
+    let f = byKey.get(k);
+    if (!f) byKey.set(k, f = { key: k, title: folderTitleOf(e), site: siteOf(e), items: [], newest: e.fetched_at || "" });
+    f.items.push(e);
+  }
+  folders = [...byKey.values()]; // newest folder first (entries are sorted newest first)
+  for (const f of folders) {
+    f.items.sort((a, b) => (a.position ?? 1e9) - (b.position ?? 1e9) || (a.fetched_at || "").localeCompare(b.fetched_at || ""));
+  }
+
   const counts = new Map();
   for (const e of entries) counts.set(siteOf(e), (counts.get(siteOf(e)) || 0) + 1);
   const select = $("site-filter");
   const previous = select.value;
-  select.replaceChildren(new Option(`전체 사이트 (${entries.length})`, ""),
+  select.replaceChildren(new Option(`모든 사이트 (${entries.length})`, ""),
     ...[...counts].sort().map(([site, n]) => new Option(`${site} (${n})`, site)));
   select.value = counts.has(previous) ? previous : "";
+  if (view.folder !== null && !byKey.has(view.folder)) view.folder = null;
   status.textContent = entries.length ? "" : "아직 저장된 이미지가 없습니다.";
-  renderGrid();
+  render();
 }
 
-function renderGrid() {
-  const filter = $("site-filter").value;
-  shown = filter ? entries.filter((e) => siteOf(e) === filter) : entries;
-  $("count").textContent = `${shown.length}장`;
+function render() {
+  const site = $("site-filter").value;
+  const inFolder = view.folder !== null;
+  const folder = inFolder ? folders.find((f) => f.key === view.folder) : null;
+  $("back-button").hidden = !inFolder;
+  $("site-filter").hidden = inFolder;
+  $("folder-title").hidden = !inFolder;
+  $("view-toggle").hidden = inFolder;
+  $("view-toggle").textContent = view.mode === "all" ? "폴더" : "전체 사진";
   thumbQueue.length = 0;
-  const tiles = shown.map((entry, i) => {
-    const tile = document.createElement("button");
-    tile.className = "tile";
-    tile.type = "button";
-    tile.dataset.index = i;
-    tile.setAttribute("aria-label", entry.filename || "이미지");
-    if (!entry.thumb) tile.textContent = (entry.content_type || "").replace(/^image\/|\+.*$/g, "").toUpperCase() || "?";
-    else thumbObserver.observe(tile);
-    tile.addEventListener("click", () => openViewer(i));
-    return tile;
-  });
-  $("grid").replaceChildren(...tiles);
+
+  if (inFolder) {
+    $("folder-title").textContent = folder.title;
+    shown = folder.items;
+    $("count").textContent = `${shown.length}장`;
+    renderTiles(shown.map((entry, i) => () => photoTile(entry, i)), "grid");
+  } else if (view.mode === "all") {
+    shown = site ? entries.filter((e) => siteOf(e) === site) : entries;
+    $("count").textContent = `${shown.length}장`;
+    renderTiles(shown.map((entry, i) => () => photoTile(entry, i)), "grid");
+  } else {
+    shown = [];
+    const list = site ? folders.filter((f) => f.site === site) : folders;
+    $("count").textContent = `폴더 ${list.length}개`;
+    renderTiles(list.map((f) => () => folderTile(f)), "grid folders");
+  }
+  const y = scrollFor.get(viewId()) || 0;
+  requestAnimationFrame(() => scrollTo(0, y));
 }
 
-$("site-filter").addEventListener("change", renderGrid);
+const viewId = () => view.folder !== null ? `f:${view.folder}` : `${view.mode}:${$("site-filter").value}`;
+
+/** Tiles are built in chunks as the end of the grid scrolls into view (thousands of folders). */
+let pendingTiles = [];
+const moreObserver = new IntersectionObserver((items) => {
+  if (items.some((i) => i.isIntersecting)) appendTiles();
+}, { rootMargin: "800px" });
+
+function renderTiles(makers, className) {
+  const grid = $("grid");
+  grid.className = className;
+  grid.replaceChildren();
+  pendingTiles = makers;
+  appendTiles();
+}
+
+function appendTiles(minCount = 0) {
+  const grid = $("grid");
+  moreObserver.disconnect();
+  const n = Math.max(RENDER_CHUNK, minCount);
+  grid.append(...pendingTiles.splice(0, n).map((make) => make()));
+  if (pendingTiles.length && grid.lastElementChild) moreObserver.observe(grid.lastElementChild);
+}
+
+const thumbFor = new WeakMap(); // element → entry whose thumbnail goes into it
+
+function watchThumb(el, entry) {
+  if (!entry.thumb) {
+    el.textContent = (entry.content_type || "").replace(/^image\/|\+.*$/g, "").toUpperCase() || "?";
+    return;
+  }
+  thumbFor.set(el, entry);
+  thumbObserver.observe(el);
+}
+
+function photoTile(entry, i) {
+  const tile = document.createElement("button");
+  tile.className = "tile";
+  tile.type = "button";
+  tile.setAttribute("aria-label", entry.filename || "이미지");
+  watchThumb(tile, entry);
+  tile.addEventListener("click", () => openViewer(i));
+  return tile;
+}
+
+function folderTile(folder) {
+  const tile = document.createElement("button");
+  tile.className = "folder";
+  tile.type = "button";
+  const cover = document.createElement("span");
+  cover.className = "cover";
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = folder.title;
+  const count = document.createElement("span");
+  count.className = "n";
+  count.textContent = `${folder.items.length}`;
+  tile.append(cover, name, count);
+  tile.setAttribute("aria-label", `${folder.title} (${folder.items.length}장)`);
+  watchThumb(cover, folder.items.find((e) => e.thumb) || folder.items[0]);
+  tile.addEventListener("click", () => openFolder(folder.key));
+  return tile;
+}
+
+function openFolder(key) {
+  scrollFor.set(viewId(), scrollY);
+  history.pushState({ folder: key }, "");
+  view.folder = key;
+  scrollFor.delete(viewId());
+  render();
+}
+
+$("back-button").addEventListener("click", () => history.back());
+$("view-toggle").addEventListener("click", () => {
+  scrollFor.set(viewId(), scrollY);
+  view.mode = view.mode === "all" ? "folders" : "all";
+  saveMode(view.mode);
+  render();
+});
+$("site-filter").addEventListener("change", render);
 $("refresh-button").addEventListener("click", () => busy($("refresh-button"), () =>
   loadGallery().catch((err) => { $("gallery-status").textContent = describeError(err); })));
 $("lock-button").addEventListener("click", lock);
+
+// Android back / browser back: closes the viewer first, then leaves the folder.
+addEventListener("popstate", (e) => {
+  if (!session) return;
+  const state = e.state || {};
+  if (!state.viewer && $("viewer").open) $("viewer").close();
+  const folder = state.folder ?? null;
+  if (folder !== view.folder) {
+    if (view.folder !== null) scrollFor.delete(viewId());
+    view.folder = folders.some((f) => f.key === folder) ? folder : null;
+    render();
+  }
+});
 
 // Thumbnails load as tiles scroll into view, a few at a time.
 const thumbQueue = [];
@@ -203,15 +340,15 @@ const thumbObserver = new IntersectionObserver((items) => {
 
 function pumpThumbs() {
   while (session && thumbsInFlight < THUMB_CONCURRENCY && thumbQueue.length) {
-    const tile = thumbQueue.shift();
-    const entry = shown[+tile.dataset.index];
-    if (!entry || !tile.isConnected) continue;
+    const el = thumbQueue.shift();
+    const entry = thumbFor.get(el);
+    if (!entry || !el.isConnected) continue;
     thumbsInFlight++;
-    loadThumb(tile, entry).finally(() => { thumbsInFlight--; pumpThumbs(); });
+    loadThumb(el, entry).finally(() => { thumbsInFlight--; pumpThumbs(); });
   }
 }
 
-async function loadThumb(tile, entry) {
+async function loadThumb(el, entry) {
   const current = session;
   try {
     const blob = await cachedGet(thumbKey(entry.thumb));
@@ -220,12 +357,12 @@ async function loadThumb(tile, entry) {
     const img = new Image();
     img.alt = "";
     img.src = trackUrl(new Blob([content], { type: "image/webp" }));
-    tile.replaceChildren(img);
+    el.replaceChildren(img);
   } catch (err) {
     if (err instanceof BudgetExceeded) $("gallery-status").textContent = describeError(err);
-    tile.classList.add("failed");
-    tile.textContent = "!";
-    tile.title = describeError(err);
+    el.classList.add("failed");
+    el.textContent = "!";
+    el.title = describeError(err);
   }
 }
 
@@ -266,7 +403,10 @@ async function openViewer(i) {
   $("viewer-prev").disabled = i === 0;
   $("viewer-next").disabled = i === shown.length - 1;
   $("viewer-status").textContent = "원본을 불러오는 중…";
-  if (!$("viewer").open) $("viewer").showModal();
+  if (!$("viewer").open) {
+    history.pushState({ ...(history.state || {}), viewer: true }, "");
+    $("viewer").showModal();
+  }
 
   const current = session;
   try {
@@ -285,7 +425,10 @@ async function openViewer(i) {
 $("viewer-prev").addEventListener("click", () => openViewer(viewerIndex - 1));
 $("viewer-next").addEventListener("click", () => openViewer(viewerIndex + 1));
 $("viewer-close").addEventListener("click", () => $("viewer").close());
-$("viewer").addEventListener("close", () => viewerAbort?.abort());
+$("viewer").addEventListener("close", () => {
+  viewerAbort?.abort();
+  if (session && history.state?.viewer) history.back(); // closed by button/Esc: drop its history entry
+});
 $("viewer").addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft") openViewer(viewerIndex - 1);
   if (e.key === "ArrowRight") openViewer(viewerIndex + 1);

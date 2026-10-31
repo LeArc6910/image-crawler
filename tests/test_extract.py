@@ -17,7 +17,8 @@ def test_extracts_all_image_sources():
       <a href="mailto:me@example.com">mail</a>
     </body></html>
     """
-    images, links = extract_page(html, "https://example.com/blog/post")
+    page = extract_page(html, "https://example.com/blog/post")
+    images, links = page.images, page.links
     assert set(images) == {
         "https://example.com/og.jpg",
         "https://cdn.example.com/tw.png",
@@ -31,7 +32,7 @@ def test_extracts_all_image_sources():
 
 
 def test_base_href_is_respected():
-    images, _ = extract_page('<base href="https://img.example.com/x/"><img src="y.png">', "https://example.com/")
+    images = extract_page('<base href="https://img.example.com/x/"><img src="y.png">', "https://example.com/").images
     assert images == ["https://img.example.com/x/y.png"]
 
 

@@ -1,3 +1,5 @@
+import pytest
+
 from image_crawler.archive import Archive
 from image_crawler.cli import main
 from image_crawler.config import CrawlSettings
@@ -151,3 +153,117 @@ def test_crawl_auto_compacts_the_index(site, tmp_path, key_file, capsys, monkeyp
     assert main(["-c", str(config), "crawl", "--site", site.url + "/a", "--site", site.url + "/b"]) == 0
     assert "compacted index: 2 segments -> 1" in capsys.readouterr().out
     assert len(list((tmp_path / "vault" / "index").iterdir())) == 1
+
+
+def album_site(site):
+    """A list → album site: list pages chain with ?page links, album pages show their own photos
+    next to covers of other albums, and there are pages a rule should not follow."""
+    photos = {f"/img/a{a}-{n}.png": make_png(1000 + a * 10 + n) for a in (1, 2, 3) for n in (1, 2)}
+    covers = {f"/img/cover{a}.png": make_png(900 + a) for a in (1, 2, 3)}
+    for path, data in {**photos, **covers}.items():
+        site.image(path, data)
+    site.page("/list/1", '<a href="/album/1"><img src="/img/cover1.png"></a>'
+                         '<a href="/album/2"><img src="/img/cover2.png"></a><a href="/list/2">next</a>'
+                         '<a href="/download/1">download</a><a href="/user/9">user</a>')
+    site.page("/list/2", '<a href="/album/3"><img src="/img/cover3.png"></a><a href="/list/1">prev</a>')
+    for a in (1, 2, 3):
+        other = 3 if a != 3 else 1
+        site.page(f"/album/{a}", f'<h1> Album  number {a} </h1>'
+                                 f'<img class="photo" src="/img/a{a}-1.png"><img class="photo" src="/img/a{a}-2.png">'
+                                 f'<a href="/album/{other}"><img src="/img/cover{other}.png"></a>')
+    site.page("/download/1", '<img src="/img/never.png">')
+    site.page("/user/9", '<img src="/img/never.png">')
+    return photos
+
+
+def album_rule(**overrides):
+    from image_crawler.config import SiteRule
+
+    base = dict(host="127.0.0.1", follow=[r"^/list/\d+$", r"^/album/\d+$"], album_pages=r"^/album/\d+$",
+                album_images="img.photo", other_images=False, max_depth=50)
+    base.update(overrides)
+    return SiteRule(**base)
+
+
+def test_album_rule_stores_only_album_photos_with_their_folder(site, tmp_path, key_file):
+    photos = album_site(site)
+    crawler, archive = make_crawler(tmp_path, key_file, max_depth=1, rules=[album_rule()])
+    stats = crawler.crawl_site(site.url + "/list/1")
+
+    assert stats.stored == 6 and stats.errors == 0 and stats.albums_finished == 3
+    assert "/download/1" not in site.hits and "/user/9" not in site.hits
+    assert not any("cover" in h for h in site.hits)  # covers are neither on album photos nor stored
+    archive.flush()
+    entries = archive.read_index()
+    folders = {(e["album"], e["position"], e["source_url"].rsplit("/", 1)[1]) for e in entries}
+    assert folders == {(f"Album number {a}", n, f"a{a}-{n}.png") for a in (1, 2, 3) for n in (1, 2)}
+    assert {archive.open_image(e["object"]).content for e in entries} == set(photos.values())
+
+    # The next run fetches the list pages again (new albums appear there) but not finished albums.
+    site.hits.clear()
+    again = crawler.crawl_site(site.url + "/list/1")
+    assert again.albums_done == 3 and again.pages == 2 and again.stored == 0
+    assert not any(h.startswith("/album/") for h in site.hits)
+
+
+def test_album_with_a_failed_photo_is_retried(site, tmp_path, key_file):
+    album_site(site)
+    del site.routes["/img/a2-2.png"]  # 404
+    crawler, _ = make_crawler(tmp_path, key_file, rules=[album_rule()])
+    stats = crawler.crawl_site(site.url + "/list/1")
+    assert stats.errors == 1 and stats.albums_finished == 2
+    site.image("/img/a2-2.png", make_png(4321))
+    site.hits.clear()
+    again = crawler.crawl_site(site.url + "/list/1")
+    assert again.stored == 1 and again.albums_finished == 1 and again.albums_done == 2
+    assert "/album/2" in site.hits
+
+
+def test_without_rules_images_get_the_page_title_as_folder(site, tmp_path, key_file):
+    site.page("/", "<title>Home page</title><img src='/a.png'>")
+    site.image("/a.png", make_png(2000))
+    crawler, archive = make_crawler(tmp_path, key_file)
+    crawler.crawl_site(site.url + "/")
+    archive.flush()
+    [entry] = archive.read_index()
+    assert entry["album"] == "Home page" and entry["position"] == 1
+
+
+def test_rules_from_config_and_restore_into_album_folders(site, tmp_path, key_file, capsys):
+    album_site(site)
+    config = tmp_path / "config.toml"
+    config.write_text(f'''
+key_file = "{key_file}"
+state_db = "state.db"
+[crawl]
+delay_seconds = 0
+min_image_bytes = 100
+[[crawl.rules]]
+host = "127.0.0.1"
+follow = ['^/list/\\d+$', '^/album/\\d+$']
+album_pages = '^/album/\\d+$'
+album_images = "img.photo"
+other_images = false
+max_depth = 50
+[storage.local]
+path = "vault"
+''')
+    assert main(["-c", str(config), "crawl", "--site", site.url + "/list/1"]) == 0
+    assert "albums: 3 finished, 0 done earlier" in capsys.readouterr().out
+    assert main(["-c", str(config), "restore", "--out", str(tmp_path / "out")]) == 0
+    files = sorted(p.relative_to(tmp_path / "out").parts[1:] for p in (tmp_path / "out").rglob("*.png"))
+    assert [(folder, name[:4]) for folder, name in files] == [
+        (f"Album_number_{a}", f"{n:03d}_") for a in (1, 2, 3) for n in (1, 2)
+    ]
+
+
+def test_bad_rule_is_rejected(tmp_path):
+    from image_crawler.config import load_config
+
+    config = tmp_path / "config.toml"
+    config.write_text('[[crawl.rules]]\nhost = "x.com"\nalbum_pages = "("\n')
+    with pytest.raises(ValueError, match="bad pattern"):
+        load_config(config)
+    config.write_text('[[crawl.rules]]\nhost = "x.com"\nalbum_images = "img[[["\n')
+    with pytest.raises(ValueError, match="bad CSS selector"):
+        load_config(config)

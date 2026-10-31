@@ -36,21 +36,25 @@ try {
   await page.fill("#setup-passphrase", passphrase);
   await page.click("#setup-submit");
   await page.waitForSelector("#gallery:not([hidden])");
-  await page.waitForFunction(() => document.querySelectorAll(".tile").length > 0);
-  const tiles = await page.$$eval(".tile", (t) => t.length);
-  await page.waitForFunction((n) => [...document.querySelectorAll(".tile img")]
-    .filter((i) => i.complete && i.naturalWidth > 0).length >= n, tiles - 1, { timeout: 15000 });
-  result.tiles = tiles;
-  result.thumbsLoaded = await loadedThumbs();
-  result.placeholders = await page.$$eval(".tile:not(:has(img))", (t) => t.map((x) => x.textContent));
-  result.count = await page.textContent("#count");
-  result.sites = await page.$$eval("#site-filter option", (o) => o.map((x) => x.textContent));
-  await page.screenshot({ path: `${shots}/2-gallery.png` });
-
-  // Site filter.
+  await page.waitForFunction(() => document.querySelectorAll(".folder").length > 0);
+  await page.waitForFunction(() => [...document.querySelectorAll(".folder img")]
+    .filter((i) => i.complete && i.naturalWidth > 0).length >= 3, null, { timeout: 15000 });
+  result.folders = await page.$$eval(".folder", (f) => f.map((x) => [x.querySelector(".name").textContent, x.querySelector(".n").textContent]));
+  result.coversLoaded = await page.$$eval(".folder img", (imgs) => imgs.filter((i) => i.complete && i.naturalWidth > 0).length);
+  result.folderCount = await page.textContent("#count");
+  await page.screenshot({ path: `${shots}/2-folders.png` });
   await page.selectOption("#site-filter", { index: 2 });
-  result.filteredCount = await page.textContent("#count");
+  result.sitesFolders = await page.textContent("#count");
   await page.selectOption("#site-filter", { index: 0 });
+
+  // Into a folder: its photos in page order.
+  await page.click(".folder >> nth=0");
+  await page.waitForFunction(() => [...document.querySelectorAll(".tile img")].filter((i) => i.complete && i.naturalWidth > 0).length >= 3);
+  result.inFolder = {
+    title: await page.textContent("#folder-title"), count: await page.textContent("#count"),
+    tiles: await page.$$eval(".tile", (t) => t.length), thumbs: await loadedThumbs(), back: await visible("back-button"),
+  };
+  await page.screenshot({ path: `${shots}/3-folder.png` });
 
   // Full-size viewer.
   await page.click(".tile >> nth=0");
@@ -58,10 +62,36 @@ try {
   result.viewer = await page.$eval("#viewer-img", (i) => ({ w: i.naturalWidth, h: i.naturalHeight }));
   result.viewerTitle = await page.textContent("#viewer-title");
   result.viewerMeta = await page.textContent("#viewer-meta");
-  await page.screenshot({ path: `${shots}/3-viewer.png` });
+  await page.screenshot({ path: `${shots}/4-viewer.png` });
   await page.click("#viewer-next");
   await page.waitForFunction((t) => document.querySelector("#viewer-title").textContent !== t, result.viewerTitle);
+  result.nextTitle = await page.textContent("#viewer-title");
+
+  // Back (Android back button) closes the viewer, then leaves the folder.
+  await page.goBack();
+  await page.waitForFunction(() => !document.querySelector("#viewer").open);
+  result.afterBack = { viewerOpen: await page.$eval("#viewer", (d) => d.open), inFolder: await visible("folder-title") };
+  await page.goBack();
+  await page.waitForFunction(() => document.querySelectorAll(".folder").length > 0);
+  result.afterSecondBack = { folders: await page.$$eval(".folder", (f) => f.length), back: await visible("back-button") };
+
+  // All photos, newest first, with the site filter.
+  await page.click("#view-toggle");
+  await page.waitForFunction(() => document.querySelectorAll(".tile").length === 10);
+  await page.waitForFunction(() => [...document.querySelectorAll(".tile img")].filter((i) => i.complete && i.naturalWidth > 0).length >= 9);
+  result.all = {
+    tiles: await page.$$eval(".tile", (t) => t.length), thumbs: await loadedThumbs(),
+    placeholders: await page.$$eval(".tile:not(:has(img))", (t) => t.map((x) => x.textContent)),
+    count: await page.textContent("#count"),
+  };
+  result.sites = await page.$$eval("#site-filter option", (o) => o.map((x) => x.textContent));
+  await page.selectOption("#site-filter", { index: 2 });
+  result.filteredCount = await page.textContent("#count");
+  await page.selectOption("#site-filter", { index: 0 });
+  await page.click(".tile >> nth=0");
+  await page.waitForFunction(() => document.querySelector("#viewer").open);
   await page.click("#viewer-close");
+  await page.waitForFunction(() => !document.querySelector("#viewer").open);
 
   // Lock wipes the gallery; the sealed bundle survives a reload and unlocks with the passphrase.
   await page.click("#lock-button");

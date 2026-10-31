@@ -216,11 +216,14 @@ def cmd_compact(args, cfg) -> int:
 
 
 def _format_stats(s: CrawlStats) -> str:
-    return (
+    text = (
         f"{s.pages} page(s), {s.images_found} image(s) found, {s.stored} stored, "
         f"{s.duplicates} duplicate(s), {s.already_seen} already seen, "
         f"{s.skipped} skipped, {s.errors} error(s)"
     )
+    if s.albums_finished or s.albums_done:
+        text += f"; albums: {s.albums_finished} finished, {s.albums_done} done earlier (not fetched)"
+    return text
 
 
 _UNSAFE = re.compile(r"[^\w.\-]+")
@@ -284,7 +287,12 @@ def _restore(args, vault: Vault, items) -> int:
             continue
         site_dir = _safe_part(urlsplit(meta.get("site", "")).netloc, "unknown-site")
         filename = f"{name[:12]}_{_safe_part(meta.get('filename', ''), 'image')}"
-        target = out_dir / site_dir / filename
+        target = out_dir / site_dir
+        if meta.get("album"):  # one folder per album (page title), photos in page order
+            target /= _safe_part(meta["album"], "album")
+            if isinstance(meta.get("position"), int):
+                filename = f"{meta['position']:03d}_{filename}"
+        target /= filename
         if target.exists():
             existing += 1
             continue

@@ -1,11 +1,62 @@
 from __future__ import annotations
 
 import copy
+import re
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 DEFAULT_CONFIG_FILE = "config.toml"
+
+
+@dataclass
+class SiteRule:
+    """How to crawl one site whose albums sit behind list pages (`[[crawl.rules]]`).
+
+    Patterns are regular expressions searched in a link's path (plus `?query`), so
+    `'^/album/\\d+$'` matches `https://host/album/123`.
+    """
+
+    host: str                    # sites on this host (a leading "www." is ignored)
+    follow: list[str] = field(default_factory=list)  # only follow matching links (empty = all on the host)
+    album_pages: str = ""        # pages that are albums; an album finished once isn't fetched again
+    album_images: str = ""       # CSS selector for an album page's own images (empty = every image on it)
+    title: str = ""              # CSS selector for the folder name (empty = the first <h1>, else <title>)
+    other_images: bool = True    # also store images found on pages that aren't albums
+    max_depth: int | None = None  # overrides crawl.max_depth (list pages chain, so it may need to be large)
+
+    def __post_init__(self):
+        self.host = self.host.strip().lower().removeprefix("www.")
+        if not self.host:
+            raise ValueError("[[crawl.rules]] needs host")
+        if isinstance(self.follow, str):
+            self.follow = [self.follow]
+        for pattern in [*self.follow, self.album_pages]:
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise ValueError(f"[[crawl.rules]] {self.host}: bad pattern {pattern!r}: {e}") from None
+        for selector in (self.album_images, self.title):
+            if selector:
+                import soupsieve
+
+                try:
+                    soupsieve.compile(selector)
+                except Exception as e:
+                    raise ValueError(f"[[crawl.rules]] {self.host}: bad CSS selector {selector!r}: {e}") from None
+
+    def _matches(self, pattern: str, url: str) -> bool:
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(url)
+        target = parts.path + (f"?{parts.query}" if parts.query else "")
+        return re.search(pattern, target) is not None
+
+    def follows(self, url: str) -> bool:
+        return not self.follow or any(self._matches(p, url) for p in self.follow)
+
+    def is_album(self, url: str) -> bool:
+        return bool(self.album_pages) and self._matches(self.album_pages, url)
 
 
 @dataclass
@@ -19,6 +70,13 @@ class CrawlSettings:
     max_image_bytes: int = 50_000_000
     respect_robots_txt: bool = True
     user_agent: str = "image-crawler/0.1"
+    rules: list[SiteRule] = field(default_factory=list)
+
+    def rule_for(self, site_url: str) -> SiteRule | None:
+        from urllib.parse import urlsplit
+
+        host = (urlsplit(site_url).hostname or "").removeprefix("www.")
+        return next((r for r in self.rules if r.host == host), None)
 
 
 @dataclass
@@ -88,11 +146,21 @@ def load_config(path: str | Path | None = None) -> Config:
         sites_file=_resolve(base, data.get("sites_file", "sites.txt")),
         state_db=_resolve(base, data.get("state_db", "~/.image-crawler/state.db")),
         key_file=_resolve(base, data.get("key_file", "~/.image-crawler/key")),
-        crawl=_section(CrawlSettings, data.get("crawl", {}), "crawl"),
+        crawl=_crawl_settings(data.get("crawl", {})),
         storage=storage,
         quota=_section(QuotaSettings, data.get("quota", {}), "quota"),
         state_sync=_flag(data, "state_sync"),
     )
+
+
+def _crawl_settings(data: dict) -> CrawlSettings:
+    data = dict(data)
+    rules = data.pop("rules", [])
+    if not isinstance(rules, list):
+        raise ValueError("crawl.rules must be written as [[crawl.rules]] tables")
+    settings = _section(CrawlSettings, data, "crawl")
+    settings.rules = [_section(SiteRule, rule, "crawl.rules") for rule in rules]
+    return settings
 
 
 def _flag(data: dict, name: str) -> bool:

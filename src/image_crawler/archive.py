@@ -27,7 +27,7 @@ INDEX_VERSION = 1
 FLUSH_EVERY = 100
 COMPACT_SEGMENT_SIZE = 5_000  # entries per segment written by compact()
 AUTO_COMPACT_SEGMENTS = 30  # crawl compacts once the index has more segments than this
-_ENTRY_FIELDS = ("site", "page_url", "source_url", "filename", "content_type", "fetched_at")
+_ENTRY_FIELDS = ("site", "page_url", "album", "position", "source_url", "filename", "content_type", "fetched_at")
 
 
 _last_segment_ns = 0

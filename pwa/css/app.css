@@ -109,7 +109,7 @@ button.icon {
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
 }
-.toolbar select { flex: 1; min-width: 0; padding: 8px 10px; }
+.toolbar select { flex: 1; min-width: 0; padding: 8px 6px; text-overflow: ellipsis; }
 .toolbar #count { white-space: nowrap; }
 
 .grid {
@@ -132,6 +132,47 @@ button.icon {
 }
 .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .tile.failed { color: var(--error); }
+
+.toolbar .folder-title { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toolbar #view-toggle { padding: 8px 10px; white-space: nowrap; }
+
+.grid.folders { grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 12px 6px; padding: 10px 8px max(16px, env(safe-area-inset-bottom)); }
+.folder {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  padding: 0;
+  background: none;
+  color: var(--text);
+  font-weight: 400;
+  text-align: left;
+  border-radius: 0;
+}
+.folder .cover {
+  aspect-ratio: 3 / 4;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--tile);
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.folder .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.folder .cover.failed { color: var(--error); }
+.folder .name { font-size: 0.82rem; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+.folder .n {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 0.6);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
 
 .viewer {
   width: 100vw;

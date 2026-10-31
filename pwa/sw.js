@@ -1,6 +1,6 @@
 // App-shell cache: the viewer's own code is served from this cache, so a changed copy on the
 // host is only picked up when VERSION changes. R2 requests (cross-origin) are never cached here.
-const VERSION = "v1";
+const VERSION = "v2";
 const CACHE = `image-vault-${VERSION}`;
 const SHELL = [
   "./", "index.html", "manifest.webmanifest", "css/app.css",

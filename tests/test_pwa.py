@@ -120,10 +120,11 @@ def test_pwa_end_to_end(r2_like, static_server, tmp_path, key_file):
     storage.set_cors([static_server.rstrip("/")])  # what `image-crawler cors --origin ...` does for R2
     archive = Archive(Vault.from_key_file(key_file), storage, flush_every=4)
     sites = ["https://photos.example.com/", "https://gallery.example.org/"]
-    for i in range(9):
-        site = sites[i % 2]
+    for i in range(9):  # three albums of three photos; position runs opposite to fetch order
+        site = sites[(i // 3) % 2]
         archive.store(picture(i, (640, 480) if i % 3 else (480, 640)), {
-            "source_url": f"{site}img/photo-{i}.jpg", "page_url": site, "site": site,
+            "source_url": f"{site}img/photo-{i}.jpg", "page_url": f"{site}album/{i // 3}", "site": site,
+            "album": f"Album {i // 3}", "position": 3 - i % 3,
             "filename": f"photo-{i}.jpg", "content_type": "image/jpeg",
             "fetched_at": f"2026-10-{10 + i:02d}T09:00:00+00:00",
         })
@@ -146,13 +147,20 @@ def test_pwa_end_to_end(r2_like, static_server, tmp_path, key_file):
 
     assert r["firstScreen"] == "setup"
     assert "비밀번호" in r["wrongPassError"]
-    assert r["tiles"] == 10 and r["thumbsLoaded"] == 9 and r["placeholders"] == ["SVG"]
-    assert r["count"] == "10장"
-    assert r["sites"] == ["전체 사이트 (10)", "gallery.example.org (4)", "photos.example.com (6)"]
-    assert r["filteredCount"] == "6장"
-    assert r["viewerTitle"] == "photo-8.jpg"  # newest first
-    assert r["viewer"] == {"w": 640, "h": 480}  # photo-8 is landscape (only multiples of 3 are portrait)
+    # Folder view first: one folder per album, newest first; the SVG without a page goes to "기타".
+    assert r["folders"] == [["Album 2", "3"], ["Album 1", "3"], ["Album 0", "3"], ["기타", "1"]]
+    assert r["coversLoaded"] == 3 and r["folderCount"] == "폴더 4개"
+    assert r["sitesFolders"] == "폴더 3개"  # photos.example.com: albums 0 and 2 + the SVG
+    assert r["inFolder"] == {"title": "Album 2", "count": "3장", "tiles": 3, "thumbs": 3, "back": True}
+    assert r["viewerTitle"] == "photo-8.jpg"  # position 1 of Album 2
+    assert r["viewer"] == {"w": 640, "h": 480}
     assert "640×480" in r["viewerMeta"] and "photos.example.com" in r["viewerMeta"]
+    assert r["nextTitle"] == "photo-7.jpg"
+    assert r["afterBack"] == {"viewerOpen": False, "inFolder": True}
+    assert r["afterSecondBack"] == {"folders": 4, "back": False}
+    assert r["all"] == {"tiles": 10, "thumbs": 9, "placeholders": ["SVG"], "count": "10장"}
+    assert r["sites"] == ["모든 사이트 (10)", "gallery.example.org (3)", "photos.example.com (7)"]
+    assert r["filteredCount"] == "7장"
     assert r["afterLock"] == {"lockVisible": True, "tiles": 0}
     assert r["afterReload"] == "lock" and r["reunlockedTiles"] == 10
     # Reopening only lists the index; segments and thumbnails come from the encrypted cache.

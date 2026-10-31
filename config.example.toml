@@ -21,6 +21,16 @@ max_image_bytes    = 50000000
 respect_robots_txt = true
 user_agent         = "image-crawler/0.1 (+mailto:you@example.com)"
 
+# Sites whose list pages link to album pages: collect only the albums' photos, one folder per
+# album (see README "목록 → 앨범 구조의 사이트"). Patterns are regexes searched in the link path.
+# [[crawl.rules]]
+# host         = "gallery.example.com"
+# follow       = ['^/list/\d+$', '^/album/\d+$']
+# album_pages  = '^/album/\d+$'
+# album_images = 'img.photo'
+# other_images = false
+# max_depth    = 1000
+
 # ---------------------------------------------------------------------------
 # Storage. Every image is AES-256-GCM encrypted *before* upload, whichever
 # backend you pick: the provider only sees random-named, padded blobs.

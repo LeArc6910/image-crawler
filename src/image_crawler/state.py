@@ -37,6 +37,12 @@ CREATE TABLE IF NOT EXISTS stored (
     bytes  INTEGER NOT NULL,
     PRIMARY KEY (target, key)
 );
+CREATE TABLE IF NOT EXISTS albums (
+    url         TEXT PRIMARY KEY,
+    title       TEXT,
+    images      INTEGER NOT NULL,
+    finished_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -70,6 +76,20 @@ class State:
     def add_object(self, name: str) -> None:
         with self.db:
             self.db.execute("INSERT OR IGNORE INTO objects VALUES (?, ?)", (name, time.time()))
+
+    # --- album pages (crawl.rules album_pages) ---
+
+    def album_done(self, url: str) -> bool:
+        return self.db.execute("SELECT 1 FROM albums WHERE url = ?", (url,)).fetchone() is not None
+
+    def finish_album(self, url: str, title: str, images: int) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO albums VALUES (?, ?, ?, ?)", (url, title, images, time.time())
+            )
+
+    def album_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
 
     # --- quota metering (see image_crawler.quota) ---
 

@@ -83,14 +83,46 @@ def _best_from_srcset(srcset: str) -> str | None:
     return best
 
 
-def extract_page(html: str, base_url: str) -> tuple[list[str], list[str]]:
-    """Return (image URLs, page links) found in an HTML document, both absolute."""
+@dataclass
+class Page:
+    images: list[str]  # absolute image URLs, in page order
+    links: list[str]   # absolute links to other pages
+    title: str         # folder name for the page's images
+
+
+def _text(tag) -> str:
+    return " ".join(tag.get_text(" ", strip=True).split()) if tag is not None else ""
+
+
+def page_title(soup: BeautifulSoup, selector: str = "") -> str:
+    """The folder name for a page: `selector`'s text, else the first <h1>, else <title>."""
+    if selector and (title := _text(soup.select_one(selector))):
+        return title[:200]
+    return (_text(soup.find("h1")) or _text(soup.find("title")))[:200]
+
+
+def extract_page(
+    html: str, base_url: str, *, image_selector: str = "", title_selector: str = ""
+) -> Page:
+    """Images, page links and the folder title of an HTML document (URLs absolute).
+
+    With `image_selector`, only the matching <img>/<source>/<picture> elements count as the
+    page's images (no og:image or linked image files): an album page's own photos, not the
+    covers of other albums around them.
+    """
     soup = BeautifulSoup(html, "html.parser")
     if (base := soup.find("base", href=True)) is not None:
         base_url = urljoin(base_url, base["href"])
 
+    if image_selector:
+        tags = []
+        for tag in soup.select(image_selector):
+            tags.extend([tag] if tag.name in ("img", "source") else tag.find_all(["img", "source"]))
+    else:
+        tags = soup.find_all(["img", "source"])
+
     raw_images: list[str] = []
-    for tag in soup.find_all(["img", "source"]):
+    for tag in tags:
         if tag.name == "source" and tag.find_parent("picture") is None:
             continue  # <source> of <video>/<audio>
         for attr in SRCSET_ATTRS:
@@ -99,15 +131,17 @@ def extract_page(html: str, base_url: str) -> tuple[list[str], list[str]]:
         for attr in LAZY_SRC_ATTRS:
             if tag.get(attr):
                 raw_images.append(tag[attr])
-    for meta in soup.find_all("meta", content=True):
-        key = (meta.get("property") or meta.get("name") or "").lower()
-        if key in META_IMAGE_KEYS:
-            raw_images.append(meta["content"])
+    if not image_selector:
+        for meta in soup.find_all("meta", content=True):
+            key = (meta.get("property") or meta.get("name") or "").lower()
+            if key in META_IMAGE_KEYS:
+                raw_images.append(meta["content"])
 
     raw_links: list[str] = []
     for a in soup.find_all("a", href=True):
         if _extension(urljoin(base_url, a["href"])) in IMAGE_EXTENSIONS:
-            raw_images.append(a["href"])
+            if not image_selector:
+                raw_images.append(a["href"])
         else:
             raw_links.append(a["href"])
 
@@ -122,7 +156,7 @@ def extract_page(html: str, base_url: str) -> tuple[list[str], list[str]]:
                 out.append(url)
         return list(dict.fromkeys(out))
 
-    return absolutize(raw_images), absolutize(raw_links)
+    return Page(absolutize(raw_images), absolutize(raw_links), page_title(soup, title_selector))
 
 
 @dataclass
@@ -134,6 +168,8 @@ class CrawlStats:
     already_seen: int = 0
     skipped: int = 0
     errors: int = 0
+    albums_done: int = 0     # album pages finished in an earlier run, not fetched again
+    albums_finished: int = 0
 
     def __iadd__(self, other: "CrawlStats") -> "CrawlStats":
         for name in self.__dataclass_fields__:
@@ -243,6 +279,8 @@ class Crawler:
 
     def _crawl(self, site_url: str, stats: CrawlStats) -> None:
         site_host = _host(site_url)
+        rule = self.settings.rule_for(site_url)
+        max_depth = rule.max_depth if rule and rule.max_depth is not None else self.settings.max_depth
         queue: deque[tuple[str, int]] = deque([(site_url, 0)])
         visited: set[str] = set()
 
@@ -251,6 +289,10 @@ class Crawler:
             if page_url in visited:
                 continue
             visited.add(page_url)
+            is_album = rule is not None and rule.is_album(page_url)
+            if is_album and self.state.album_done(page_url):
+                stats.albums_done += 1
+                continue
             if not self.fetcher.allowed(page_url):
                 log.info("robots.txt disallows %s", page_url)
                 continue
@@ -264,19 +306,30 @@ class Crawler:
             if "html" not in resp.headers.get("Content-Type", "text/html").lower():
                 continue
             stats.pages += 1
-            images, links = extract_page(resp.text, resp.url)
-            log.info("page %s: %d image(s), %d link(s)", page_url, len(images), len(links))
+            page = extract_page(
+                resp.text,
+                resp.url,
+                image_selector=rule.album_images if is_album and rule else "",
+                title_selector=rule.title if rule else "",
+            )
+            log.info("page %s: %d image(s), %d link(s)", page_url, len(page.images), len(page.links))
 
-            for image_url in images:
-                stats.images_found += 1
-                self._process_image(image_url, page_url, site_url, stats)
+            if is_album or rule is None or rule.other_images:
+                errors_before = stats.errors
+                for position, image_url in enumerate(page.images, 1):
+                    stats.images_found += 1
+                    self._process_image(image_url, page_url, site_url, stats, page.title, position)
+                if is_album and stats.errors == errors_before:
+                    self.state.finish_album(page_url, page.title, len(page.images))
+                    stats.albums_finished += 1
 
-            if depth < self.settings.max_depth:
-                for link in links:
+            if depth < max_depth:
+                for link in page.links:
                     if (
                         _host(link) == site_host
                         and link not in visited
                         and _extension(link) not in NON_PAGE_EXTENSIONS
+                        and (rule is None or rule.follows(link))
                     ):
                         queue.append((link, depth + 1))
 
@@ -307,7 +360,15 @@ class Crawler:
             return None
         return data, mime
 
-    def _process_image(self, url: str, page_url: str, site_url: str, stats: CrawlStats) -> None:
+    def _process_image(
+        self,
+        url: str,
+        page_url: str,
+        site_url: str,
+        stats: CrawlStats,
+        album: str = "",
+        position: int | None = None,
+    ) -> None:
         if self.state.seen_url(url):
             stats.already_seen += 1
             return
@@ -337,6 +398,8 @@ class Crawler:
             "source_url": url,
             "page_url": page_url,
             "site": site_url,
+            "album": album or None,
+            "position": position,
             "filename": _filename_for(url, mime),
             "content_type": mime,
             "fetched_at": datetime.now(timezone.utc).isoformat(),
