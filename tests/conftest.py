@@ -64,3 +64,13 @@ def key_file(tmp_path):
     path = tmp_path / "key"
     generate_key_file(path)
     return path
+
+
+def make_photo(width: int, height: int, fmt: str = "JPEG", **save_args) -> bytes:
+    """A real, decodable image filled with noise (so every call is unique)."""
+    from PIL import Image
+
+    img = Image.frombytes("RGB", (width, height), os.urandom(width * height * 3))
+    out = io.BytesIO()
+    img.save(out, fmt, **save_args)
+    return out.getvalue()

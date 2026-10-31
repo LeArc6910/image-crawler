@@ -15,10 +15,9 @@ from urllib.parse import unquote, urldefrag, urljoin, urlsplit
 import requests
 from bs4 import BeautifulSoup
 
+from image_crawler.archive import Archive
 from image_crawler.config import CrawlSettings
-from image_crawler.crypto import Vault
 from image_crawler.state import State
-from image_crawler.storage import Storage
 
 log = logging.getLogger(__name__)
 
@@ -215,20 +214,29 @@ class Crawler:
     def __init__(
         self,
         settings: CrawlSettings,
-        vault: Vault,
-        storage: Storage,
+        archive: Archive,
         state: State,
         fetcher: Fetcher | None = None,
     ):
         self.settings = settings
-        self.vault = vault
-        self.storage = storage
+        self.archive = archive
         self.state = state
         self.fetcher = fetcher or Fetcher(settings)
 
     def crawl_site(self, site_url: str) -> CrawlStats:
         """Breadth-first crawl of one site, staying on its host, storing every image found."""
         stats = CrawlStats()
+        try:
+            self._crawl(site_url, stats)
+        finally:
+            try:
+                self.archive.flush()
+            except Exception as e:
+                log.error("index upload failed (run `image-crawler reindex` later): %s", e)
+                stats.errors += 1
+        return stats
+
+    def _crawl(self, site_url: str, stats: CrawlStats) -> None:
         site_host = _host(site_url)
         queue: deque[tuple[str, int]] = deque([(site_url, 0)])
         visited: set[str] = set()
@@ -266,7 +274,6 @@ class Crawler:
                         and _extension(link) not in NON_PAGE_EXTENSIONS
                     ):
                         queue.append((link, depth + 1))
-        return stats
 
     def _download_image(self, url: str) -> tuple[bytes, str] | None:
         """Fetch an image, enforcing size limits. Returns (bytes, mime) or None if skipped."""
@@ -314,8 +321,8 @@ class Crawler:
             stats.skipped += 1
             return
         data, mime = result
-        name = self.vault.object_name(data)
-        if self.state.has_object(name) or self.storage.exists(name):
+        name = self.archive.vault.object_name(data)
+        if self.state.has_object(name) or self.archive.has_image(name):
             self.state.add_object(name)
             self.state.record_url(url, "duplicate", name, page_url, site_url)
             stats.duplicates += 1
@@ -330,7 +337,7 @@ class Crawler:
             "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            self.storage.put(name, self.vault.seal(data, metadata))
+            self.archive.store(data, metadata)
         except Exception as e:
             log.error("upload failed for %s: %s", url, e)
             stats.errors += 1

@@ -7,13 +7,15 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from image_crawler import layout
+from image_crawler.archive import Archive
 from image_crawler.config import load_config
 from image_crawler.crawler import Crawler, CrawlStats
-from image_crawler.crypto import DecryptionError, Vault, generate_key_file
+from image_crawler.crypto import KIND_IMAGE, DecryptionError, Vault, generate_key_file
 from image_crawler.sites import add_sites, read_sites, remove_sites
 from image_crawler.state import State
 from image_crawler.storage import build_storage
-from image_crawler.storage.base import name_from_path
+from image_crawler.storage.s3 import S3Storage
 
 log = logging.getLogger("image_crawler")
 
@@ -63,11 +65,10 @@ def cmd_crawl(args, cfg) -> int:
     if args.max_pages is not None:
         cfg.crawl.max_pages_per_site = args.max_pages
 
-    vault = Vault.from_key_file(cfg.key_file)
-    storage = build_storage(cfg.storage)
+    archive = Archive(Vault.from_key_file(cfg.key_file), build_storage(cfg.storage))
     state = State(cfg.state_db)
-    crawler = Crawler(cfg.crawl, vault, storage, state)
-    log.info("storing to %s", storage.describe())
+    crawler = Crawler(cfg.crawl, archive, state)
+    log.info("storing to %s", archive.storage.describe())
 
     total = CrawlStats()
     try:
@@ -99,32 +100,45 @@ def _safe_part(value: str, fallback: str) -> str:
     return value[:120] or fallback
 
 
+def _blobs_in_dir(root: Path):
+    """(name, loader) for every image blob under a folder, e.g. one downloaded from the provider."""
+    for path in sorted(root.rglob("*.bin")):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith((layout.THUMBS, layout.INDEX)):
+            continue
+        name = path.stem
+        if len(name) == 64 and all(c in "0123456789abcdef" for c in name):
+            yield name, path.read_bytes
+
+
 def cmd_restore(args, cfg) -> int:
     """Download (or read) encrypted blobs, decrypt them and write the original images."""
     vault = Vault.from_key_file(cfg.key_file)
     out_dir = Path(args.out).expanduser()
 
     if args.from_dir:
-        files = [p for p in Path(args.from_dir).expanduser().rglob("*.bin") if p.is_file()]
-        items = ((name_from_path(p.name), p.read_bytes) for p in files)
+        items = _blobs_in_dir(Path(args.from_dir).expanduser())
     else:
-        storage = build_storage(cfg.storage)
-        print(f"restoring from {storage.describe()}")
-        items = ((n, (lambda n=n: storage.get(n))) for n in storage.list_names())
+        archive = Archive(vault, build_storage(cfg.storage))
+        print(f"restoring from {archive.storage.describe()}")
+        items = (
+            (n, (lambda n=n: archive.storage.get(layout.image_key(n))))
+            for n in archive.image_names()
+        )
 
     restored = failed = existing = 0
     for name, load in items:
         try:
-            opened = vault.open(load())
+            opened = vault.open(load(), kind=KIND_IMAGE, name=name)
         except DecryptionError as e:
             log.warning("cannot decrypt %s: %s", name, e)
             failed += 1
             continue
         meta = opened.metadata
-        site_dir = _safe_part(urlsplit(meta.get("site", "")).netloc, "unknown-site")
         if args.site and args.site not in meta.get("site", ""):
             continue
-        filename = f"{(name or 'x')[:12]}_{_safe_part(meta.get('filename', ''), 'image')}"
+        site_dir = _safe_part(urlsplit(meta.get("site", "")).netloc, "unknown-site")
+        filename = f"{name[:12]}_{_safe_part(meta.get('filename', ''), 'image')}"
         target = out_dir / site_dir / filename
         if target.exists():
             existing += 1
@@ -134,6 +148,38 @@ def cmd_restore(args, cfg) -> int:
         restored += 1
     print(f"restored {restored}, already present {existing}, failed {failed} -> {out_dir}")
     return 1 if failed else 0
+
+
+def cmd_reindex(args, cfg) -> int:
+    """Add thumbnails and index entries for stored images the index doesn't know about yet."""
+    archive = Archive(Vault.from_key_file(cfg.key_file), build_storage(cfg.storage))
+    print(f"checking {archive.storage.describe()}")
+    indexed = {entry["object"] for entry in archive.read_index()}
+    missing = [n for n in archive.image_names() if n not in indexed]
+    print(f"{len(indexed)} indexed, {len(missing)} missing")
+    failed = 0
+    for i, name in enumerate(missing, 1):
+        try:
+            opened = archive.open_image(name)
+            archive.add_to_index(name, opened.content, opened.metadata)
+        except Exception as e:
+            log.warning("cannot index %s: %s", name, e)
+            failed += 1
+        if i % 50 == 0:
+            print(f"  {i}/{len(missing)}")
+    archive.flush()
+    print(f"indexed {len(missing) - failed}, failed {failed}")
+    return 1 if failed else 0
+
+
+def cmd_cors(args, cfg) -> int:
+    storage = build_storage(cfg.storage)
+    if not isinstance(storage, S3Storage):
+        print("cors only applies to the s3 backend (e.g. Cloudflare R2)", file=sys.stderr)
+        return 2
+    storage.set_cors(args.origin)
+    print(f"CORS on {storage.describe()} now allows GET/HEAD from: {', '.join(args.origin)}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -172,6 +218,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--from-dir", help="decrypt *.bin blobs from a local folder instead of the backend")
     p.add_argument("--site", help="only restore images whose site URL contains this text")
     p.set_defaults(func=cmd_restore)
+
+    p = sub.add_parser("reindex", help="add thumbnails/index entries for images missing from the index")
+    p.set_defaults(func=cmd_reindex)
+
+    p = sub.add_parser("cors", help="allow the PWA viewer's origin to read the bucket (s3/R2 only)")
+    p.add_argument("--origin", action="append", required=True,
+                   help="viewer origin, e.g. https://you.github.io (repeatable)")
+    p.set_defaults(func=cmd_cors)
     return parser
 
 

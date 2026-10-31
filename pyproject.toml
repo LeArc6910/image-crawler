@@ -12,6 +12,7 @@ dependencies = [
     "requests>=2.31",
     "beautifulsoup4>=4.12",
     "cryptography>=42",
+    "Pillow>=10",
 ]
 
 [project.optional-dependencies]

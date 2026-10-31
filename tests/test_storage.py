@@ -11,12 +11,15 @@ from image_crawler.storage.s3 import S3Storage
 
 
 def exercise(storage):
-    name = "ab" + "0" * 62
-    assert not storage.exists(name)
-    storage.put(name, b"blob")
-    assert storage.exists(name)
-    assert storage.get(name) == b"blob"
-    assert list(storage.list_names()) == [name]
+    key = "ab/" + "ab" + "0" * 62 + ".bin"
+    assert not storage.exists(key)
+    storage.put(key, b"blob")
+    storage.put("index/seg-1.bin", b"idx")
+    assert storage.exists(key)
+    assert storage.get(key) == b"blob"
+    assert sorted(storage.list()) == [key, "index/seg-1.bin"]
+    assert list(storage.list("index/")) == ["index/seg-1.bin"]
+    assert list(storage.list("thumbs/")) == []
 
 
 def test_local_storage(tmp_path):
@@ -25,14 +28,20 @@ def test_local_storage(tmp_path):
 
 
 @mock_aws
-def test_s3_storage():
+def test_s3_storage_and_cors():
     os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
     os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
     client = boto3.client("s3", region_name="us-east-1")
     client.create_bucket(Bucket="vault")
-    exercise(S3Storage("vault", prefix="images", client=client))
-    keys = [o["Key"] for o in client.list_objects_v2(Bucket="vault")["Contents"]]
-    assert keys == ["images/ab/ab" + "0" * 62 + ".bin"]
+    storage = S3Storage("vault", prefix="images", client=client)
+    exercise(storage)
+    keys = sorted(o["Key"] for o in client.list_objects_v2(Bucket="vault")["Contents"])
+    assert keys == ["images/ab/ab" + "0" * 62 + ".bin", "images/index/seg-1.bin"]
+
+    storage.set_cors(["https://me.github.io"])
+    rule = client.get_bucket_cors(Bucket="vault")["CORSRules"][0]
+    assert rule["AllowedOrigins"] == ["https://me.github.io"]
+    assert set(rule["AllowedMethods"]) == {"GET", "HEAD"}
 
 
 def test_build_storage_validates():

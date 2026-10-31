@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Iterator
 
-from image_crawler.storage.base import Storage, name_from_path, object_path
+from image_crawler.storage.base import Storage
 
 
 class LocalStorage(Storage):
@@ -14,26 +14,28 @@ class LocalStorage(Storage):
         self.root = Path(path).expanduser()
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def _path(self, name: str) -> Path:
-        return self.root / object_path(name)
+    def _path(self, key: str) -> Path:
+        return self.root / key
 
-    def put(self, name: str, data: bytes) -> None:
-        path = self._path(name)
+    def put(self, key: str, data: bytes) -> None:
+        path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_bytes(data)
         os.replace(tmp, path)
 
-    def get(self, name: str) -> bytes:
-        return self._path(name).read_bytes()
+    def get(self, key: str) -> bytes:
+        return self._path(key).read_bytes()
 
-    def exists(self, name: str) -> bool:
-        return self._path(name).exists()
+    def exists(self, key: str) -> bool:
+        return self._path(key).is_file()
 
-    def list_names(self) -> Iterator[str]:
-        for path in self.root.rglob("*"):
-            if path.is_file() and (name := name_from_path(path.name)):
-                yield name
+    def list(self, prefix: str = "") -> Iterator[str]:
+        for path in sorted(self.root.rglob("*")):
+            if path.is_file() and path.suffix != ".tmp":
+                key = path.relative_to(self.root).as_posix()
+                if key.startswith(prefix):
+                    yield key
 
     def describe(self) -> str:
         return f"local:{self.root}"

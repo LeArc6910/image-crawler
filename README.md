@@ -4,10 +4,13 @@
 저장소 업체에는 의미 없는 이름의 암호문 덩어리만 올라가므로, 업체가 어디든 내용·원본 URL·파일명을 볼 수 없습니다(zero-knowledge).
 
 ```
-sites.txt ──► 크롤러 ──► 이미지 다운로드 ──► AES-256-GCM 암호화 ──► 저장소 (S3 / rclone / 로컬)
-                │                                (내 키로, 로컬에서)
+sites.txt ──► 크롤러 ──► 이미지 다운로드 ──► 썸네일 생성 ──► AES-256-GCM 암호화 ──► 저장소 (R2 등 S3 / rclone / 로컬)
+                │                                              (내 키로, 로컬에서)
                 └─ robots.txt 준수, 호스트별 요청 간격, 429 백오프, 중복 제거
 ```
+
+원본과 함께 암호화된 **썸네일**과 **목록(인덱스)** 도 올라가므로, 휴대폰 PWA 뷰어(개발 중)가 원본을 받지 않고도
+갤러리를 보여줄 수 있습니다. 앞으로의 개발 항목은 [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md)에 있습니다.
 
 ## 설치
 
@@ -27,6 +30,8 @@ image-crawler crawl -v                       # 수집 + 암호화 + 업로드
 image-crawler restore --out ./restored       # 저장소에서 내려받아 복호화
 image-crawler restore --out ./restored --from-dir ./downloaded-blobs   # 웹 UI 등으로 받은 *.bin 복호화
 image-crawler remove https://another.example/photos
+image-crawler reindex                        # 인덱스에 빠진 이미지(이전 버전 업로드분, 중단된 실행)의 썸네일·목록 보충
+image-crawler cors --origin https://you.github.io   # PWA 뷰어 주소에서 버킷을 읽도록 허용 (S3/R2)
 ```
 
 주기적으로 돌리려면 cron 등에 등록하면 됩니다. 이미 받은 URL과 같은 내용의 이미지는 자동으로 건너뜁니다.
@@ -49,7 +54,9 @@ image-crawler remove https://another.example/photos
 | 이미지 내용 | AES-256-GCM 암호문 (키는 로컬에만 존재) |
 | 원본 URL, 파일명, 형식, 수집 시각 | 암호문 *내부*에 포함 → 볼 수 없음 |
 | 객체 이름 | 키가 있는 HMAC-SHA256 값 → 내용·출처 추측 불가, 같은 이미지는 같은 이름이라 중복 저장 안 됨 |
-| 파일 크기 | 64 KiB 단위로 패딩 → 정확한 크기 숨김 |
+| 썸네일·목록 | 각각 암호화. 썸네일 이름도 HMAC이라 어느 원본의 것인지 알 수 없음 |
+| 파일 크기 | 원본은 64 KiB, 썸네일·목록은 4 KiB 단위로 패딩 → 정확한 크기 숨김 |
+| 암호문 바꿔치기 | 각 암호문은 자기 위치(종류·이름)에 묶여 있어, 서버가 다른 암호문으로 바꾸면 복호화 실패 |
 | 계정 정보, 결제 정보, 접속 IP, 업로드 시각·총 용량 | **보임** (아래 참고) |
 
 - 키 파일(`key_file`)을 잃어버리면 **누구도(본인 포함) 복구할 수 없습니다.** 여러 곳에 오프라인으로 백업하세요.
@@ -61,9 +68,19 @@ image-crawler remove https://another.example/photos
 
 | backend | 대상 | 비고 |
 | --- | --- | --- |
-| `s3` | Backblaze B2, Wasabi, Cloudflare R2, AWS S3, Filen CLI S3 서버 등 | 자격 증명은 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` 환경변수로 |
+| `s3` | **Cloudflare R2**(권장), Backblaze B2, Wasabi, AWS S3 등 | 자격 증명은 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` 환경변수로 |
 | `rclone` | Filen, MEGA, pCloud, Proton Drive, SFTP 등 rclone이 지원하는 모든 곳 | `rclone config`로 remote를 먼저 만들 것 |
 | `local` | 로컬 폴더 | 테스트용, 또는 동기화 클라이언트가 올리는 폴더 |
+
+R2 설정 절차는 [개발 계획서의 R2 설정](docs/DEVELOPMENT_PLAN.md#4-r2-설정-절차-phase-1-기준)을 참고하세요.
+
+저장소 안의 배치:
+
+```
+ab/<name>.bin            원본 (64 KiB 패딩)
+thumbs/cd/<thumb>.bin    썸네일, 최대 320px WebP (4 KiB 패딩)
+index/<시각>-<난수>.bin  목록 조각 — 크롤링할 때마다 추가 (4 KiB 패딩)
+```
 
 어느 백엔드든 업로드 전에 이 도구가 직접 암호화하므로, 업체 자체의 E2EE 여부와 무관하게 내용은 보호됩니다.
 (rclone `crypt` 원격을 겹쳐 쓸 필요는 없습니다.)
@@ -78,5 +95,5 @@ image-crawler remove https://another.example/photos
 
 ```bash
 pip install -e '.[dev]'
-pytest
+pytest          # node가 있으면 PWA 복호화 코드(pwa/js/vault.js)와의 교차 테스트도 실행
 ```

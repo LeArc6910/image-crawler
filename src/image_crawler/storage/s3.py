@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Iterator
 
-from image_crawler.storage.base import Storage, name_from_path, object_path
+from image_crawler.storage.base import Storage
+
+CORS_HEADERS = ["authorization", "x-amz-date", "x-amz-content-sha256", "range"]
 
 
 class S3Storage(Storage):
-    """Any S3-compatible object store: Backblaze B2, Wasabi, Cloudflare R2, AWS S3, Filen S3 gateway...
+    """Any S3-compatible object store: Cloudflare R2, Backblaze B2, Wasabi, AWS S3, ...
 
     Credentials come from the standard AWS chain (AWS_ACCESS_KEY_ID /
     AWS_SECRET_ACCESS_KEY environment variables, ~/.aws/credentials, ...), never
@@ -41,37 +43,50 @@ class S3Storage(Storage):
         self.bucket = bucket
         self.prefix = prefix.strip("/") + "/" if prefix.strip("/") else ""
 
-    def _key(self, name: str) -> str:
-        return self.prefix + object_path(name)
-
-    def put(self, name: str, data: bytes) -> None:
+    def put(self, key: str, data: bytes) -> None:
         self.client.put_object(
             Bucket=self.bucket,
-            Key=self._key(name),
+            Key=self.prefix + key,
             Body=data,
             ContentType="application/octet-stream",
         )
 
-    def get(self, name: str) -> bytes:
-        return self.client.get_object(Bucket=self.bucket, Key=self._key(name))["Body"].read()
+    def get(self, key: str) -> bytes:
+        return self.client.get_object(Bucket=self.bucket, Key=self.prefix + key)["Body"].read()
 
-    def exists(self, name: str) -> bool:
+    def exists(self, key: str) -> bool:
         from botocore.exceptions import ClientError
 
         try:
-            self.client.head_object(Bucket=self.bucket, Key=self._key(name))
+            self.client.head_object(Bucket=self.bucket, Key=self.prefix + key)
             return True
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
                 return False
             raise
 
-    def list_names(self) -> Iterator[str]:
+    def list(self, prefix: str = "") -> Iterator[str]:
         paginator = self.client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix):
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix + prefix):
             for obj in page.get("Contents", []):
-                if name := name_from_path(obj["Key"]):
-                    yield name
+                yield obj["Key"][len(self.prefix) :]
+
+    def set_cors(self, origins: list[str]) -> None:
+        """Let the PWA (served from `origins`) read objects with signed requests."""
+        self.client.put_bucket_cors(
+            Bucket=self.bucket,
+            CORSConfiguration={
+                "CORSRules": [
+                    {
+                        "AllowedOrigins": origins,
+                        "AllowedMethods": ["GET", "HEAD"],
+                        "AllowedHeaders": CORS_HEADERS,
+                        "ExposeHeaders": ["ETag", "Content-Length"],
+                        "MaxAgeSeconds": 3600,
+                    }
+                ]
+            },
+        )
 
     def describe(self) -> str:
         return f"s3://{self.bucket}/{self.prefix}"

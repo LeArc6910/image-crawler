@@ -1,0 +1,6 @@
+{
+  "name": "image-vault-viewer",
+  "private": true,
+  "type": "module",
+  "description": "PWA viewer for the encrypted image archive (no build step, no runtime dependencies)"
+}

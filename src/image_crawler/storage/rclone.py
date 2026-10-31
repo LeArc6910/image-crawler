@@ -4,7 +4,7 @@ import shutil
 import subprocess
 from typing import Iterator
 
-from image_crawler.storage.base import Storage, name_from_path, object_path
+from image_crawler.storage.base import Storage
 
 
 class RcloneStorage(Storage):
@@ -22,8 +22,8 @@ class RcloneStorage(Storage):
             raise RuntimeError(f"rclone binary not found: {rclone_bin}")
         self.remote = remote.rstrip("/")
 
-    def _target(self, name: str) -> str:
-        return f"{self.remote}/{object_path(name)}"
+    def _target(self, key: str) -> str:
+        return f"{self.remote}/{key}"
 
     def _run(self, *args: str, data: bytes | None = None) -> bytes:
         result = subprocess.run(
@@ -36,24 +36,30 @@ class RcloneStorage(Storage):
             )
         return result.stdout
 
-    def put(self, name: str, data: bytes) -> None:
-        self._run("rcat", self._target(name), data=data)
+    def put(self, key: str, data: bytes) -> None:
+        self._run("rcat", self._target(key), data=data)
 
-    def get(self, name: str) -> bytes:
-        return self._run("cat", self._target(name))
+    def get(self, key: str) -> bytes:
+        return self._run("cat", self._target(key))
 
-    def exists(self, name: str) -> bool:
+    def exists(self, key: str) -> bool:
         try:
-            out = self._run("lsf", "--files-only", self._target(name))
+            out = self._run("lsf", "--files-only", self._target(key))
         except RuntimeError:
             return False
         return bool(out.strip())
 
-    def list_names(self) -> Iterator[str]:
-        out = self._run("lsf", "-R", "--files-only", self.remote)
+    def list(self, prefix: str = "") -> Iterator[str]:
+        # List the deepest directory the prefix names, then filter on the remainder.
+        directory = prefix.rsplit("/", 1)[0] + "/" if "/" in prefix else ""
+        try:
+            out = self._run("lsf", "-R", "--files-only", self._target(directory))
+        except RuntimeError:
+            return
         for line in out.decode().splitlines():
-            if name := name_from_path(line.strip()):
-                yield name
+            key = directory + line.strip()
+            if key.startswith(prefix):
+                yield key
 
     def describe(self) -> str:
         return f"rclone:{self.remote}"

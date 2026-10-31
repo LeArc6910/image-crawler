@@ -1,3 +1,4 @@
+from image_crawler.archive import Archive
 from image_crawler.cli import main
 from image_crawler.config import CrawlSettings
 from image_crawler.crawler import Crawler
@@ -15,9 +16,9 @@ def settings(**overrides):
 
 
 def make_crawler(tmp_path, key_file, **overrides):
-    storage = LocalStorage(tmp_path / "vault")
+    archive = Archive(Vault.from_key_file(key_file), LocalStorage(tmp_path / "vault"))
     state = State(tmp_path / "state.db")
-    return Crawler(settings(**overrides), Vault.from_key_file(key_file), storage, state), storage
+    return Crawler(settings(**overrides), archive, state), archive
 
 
 def test_crawls_follows_links_and_stores_encrypted(site, tmp_path, key_file):
@@ -28,17 +29,16 @@ def test_crawls_follows_links_and_stores_encrypted(site, tmp_path, key_file):
     site.image("/cat.png", cat)
     site.image("/dog.png", dog)
 
-    crawler, storage = make_crawler(tmp_path, key_file, max_depth=1)
+    crawler, archive = make_crawler(tmp_path, key_file, max_depth=1)
     stats = crawler.crawl_site(site.url + "/")
 
     assert stats.pages == 2
     assert stats.stored == 2
     assert stats.already_seen == 1  # cat.png linked from both pages
     assert "/deeper" not in site.hits
-    names = set(storage.list_names())
+    names = set(archive.image_names())
     assert len(names) == 2
-    vault = Vault.from_key_file(key_file)
-    restored = {vault.open(storage.get(n)).content for n in names}
+    restored = {archive.open_image(n).content for n in names}
     assert restored == {cat, dog}
     for path in (tmp_path / "vault").rglob("*.bin"):
         assert b"PNG" not in path.read_bytes()[:64]
@@ -48,7 +48,7 @@ def test_second_run_skips_known_images_and_dedupes_by_content(site, tmp_path, ke
     img = make_png(2000)
     site.page("/", '<img src="/a.png">')
     site.image("/a.png", img)
-    crawler, storage = make_crawler(tmp_path, key_file)
+    crawler, archive = make_crawler(tmp_path, key_file)
     assert crawler.crawl_site(site.url + "/").stored == 1
 
     site.page("/", '<img src="/a.png"><img src="/copy-of-a.png">')
@@ -57,7 +57,7 @@ def test_second_run_skips_known_images_and_dedupes_by_content(site, tmp_path, ke
     assert stats.stored == 0
     assert stats.already_seen == 1
     assert stats.duplicates == 1
-    assert len(list(storage.list_names())) == 1
+    assert len(list(archive.image_names())) == 1
 
 
 def test_size_limits_and_non_images_are_skipped(site, tmp_path, key_file):

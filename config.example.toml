@@ -27,12 +27,13 @@ path = "vault"
 
 # Any S3-compatible service. Credentials come from AWS_ACCESS_KEY_ID /
 # AWS_SECRET_ACCESS_KEY (or ~/.aws/credentials), never from this file.
-# Backblaze B2 example (endpoint is shown on the bucket page):
+# Cloudflare R2 example (R2 API token with Object Read & Write on this bucket):
 [storage.s3]
-bucket       = "my-image-vault"
-prefix       = "images"
-endpoint_url = "https://s3.us-west-004.backblazeb2.com"
-region       = "us-west-004"
+bucket       = "image-vault"
+prefix       = ""
+endpoint_url = "https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
+region       = "auto"
+# Backblaze B2 instead: endpoint_url = "https://s3.us-west-004.backblazeb2.com", region = "us-west-004"
 # force_path_style = true   # needed by some gateways (e.g. Filen CLI's S3 server)
 
 # Any rclone remote: configure it first with `rclone config`.
