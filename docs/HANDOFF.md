@@ -16,7 +16,7 @@
 | 점검 (`check`), 휴대폰용 연결 정보 (`viewer-export`) | 완료 |
 | PWA 뷰어 (`pwa/`): 연결·잠금·갤러리·원본 보기·암호문 캐시·요청 폭주 방지 | 완료 (헤드리스 Chromium 테스트만, 실기기 미검증) |
 | 목록 병합 (`compact`, 크롤링 후 자동), `restore --limit` | 완료 |
-| GitHub Pages 배포 워크플로 (`.github/workflows/pages.yml`) | 파일만 있음, 미배포 |
+| GitHub Pages 배포 워크플로 (`.github/workflows/pages.yml`) | 배포됨: https://learc6910.github.io/image-crawler/ |
 
 ## 2. 실제 R2에서 확인된 것
 
@@ -48,7 +48,13 @@
 자세한 수치는 DEVELOPMENT_PLAN.md의 **실제 R2 크롤링 검증 결과**. 테스트용 키 + `prefix = "verify-test/"`로 진행했고
 그 데이터(약 2.9 MB)는 버킷에 남아 있다 (테스트 키는 세션과 함께 사라졌으므로 열 수 없음, 지워도 됨).
 
-### 3-2. 뷰어 배포 (사용자 작업 + 승인 필요)
+### 3-2. 뷰어 배포 — 1·2 완료 (2026-10-31)
+
+- `main` 생성·푸시, 기본 브랜치를 `main`으로 변경, 저장소 **공개** 전환(전 커밋 기록에 비밀 값 없음 확인), Pages 소스 GitHub Actions
+- *Deploy viewer* 첫 실행 성공 → **https://learc6910.github.io/image-crawler/**
+  (헤드리스 Chromium 휴대폰 화면에서 연결 화면 표시, service worker 등록, 콘솔 오류 0)
+- 남은 것: 아래 3~5 (CORS 등록, 읽기 전용 토큰 + `viewer-export`, 실기기 확인)
+
 
 1. `main` 브랜치 만들기 — **사용자 승인 후** 이 브랜치로 생성/푸시 (또는 사용자가 직접)
 2. 사용자: 저장소 Settings → Pages → Source를 **GitHub Actions**로 → *Deploy viewer* 실행
@@ -59,7 +65,7 @@
    ```json
    [
      {
-       "AllowedOrigins": ["https://<사용자>.github.io"],
+       "AllowedOrigins": ["https://learc6910.github.io"],
        "AllowedMethods": ["GET", "HEAD"],
        "AllowedHeaders": ["authorization", "x-amz-date", "x-amz-content-sha256", "range"],
        "ExposeHeaders": ["ETag", "Content-Length"],
