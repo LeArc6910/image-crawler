@@ -3,8 +3,12 @@
 Every image, thumbnail and index segment is sealed with AES-256-GCM before it
 leaves this machine. The original URL, file name and content type travel
 *inside* the ciphertext, and object names are keyed HMACs, so the provider
-learns neither what is stored nor where it came from. Plaintext is padded to
-fixed-size buckets to blur exact sizes.
+learns neither what is stored nor where it came from. Plaintext is padded to blur
+exact sizes: images and thumbnails with Padmé (at most ~12% overhead, typically 2-5%;
+see "Reducing Metadata Leakage from Encrypted Files and Communication with PURBs",
+PETS 2019), with a 4 KiB minimum; index and state blobs to 4 KiB multiples.
+Opening never depends on the padding (the header gives the lengths), so blobs
+padded the old way (64 KiB multiples) still open.
 
 Blob layout:  MAGIC(4) | nonce(12) | AES-GCM( header | metadata | content | padding )
 Header:       metadata length (u32, big endian) | content length (u64, big endian)
@@ -34,8 +38,8 @@ MAGIC_V1 = b"ICV1"
 MAGIC = b"ICV2"
 NONCE_SIZE = 12
 KEY_SIZE = 32
-PAD_BLOCK = 64 * 1024
 SMALL_PAD_BLOCK = 4 * 1024
+PADME = 0  # pad_block value selecting Padmé padding (the default for images and thumbnails)
 _HEADER = struct.Struct(">IQ")
 
 KIND_IMAGE = "image"
@@ -96,6 +100,22 @@ def load_master_key(key_file: Path) -> bytes:
     return load_key_file(key_file)
 
 
+def padme(length: int) -> int:
+    """Padmé: round up so only the top ~log2(log2(length)) bits of the length stay variable."""
+    if length < 2:
+        return length
+    exponent = length.bit_length() - 1
+    low_bits = exponent - exponent.bit_length()
+    mask = (1 << low_bits) - 1
+    return (length + mask) & ~mask
+
+
+def padded_length(length: int, pad_block: int) -> int:
+    if pad_block == PADME:
+        return max(padme(length), SMALL_PAD_BLOCK)
+    return length + (-length % pad_block)
+
+
 def _derive(master_key: bytes, label: bytes) -> bytes:
     return HKDF(algorithm=hashes.SHA256(), length=KEY_SIZE, salt=None, info=label).derive(
         master_key
@@ -136,11 +156,11 @@ class Vault:
         return hmac.new(self._name_key, b"thumb:" + object_name.encode(), hashlib.sha256).hexdigest()
 
     def seal(
-        self, content: bytes, metadata: dict, *, kind: str, name: str, pad_block: int = PAD_BLOCK
+        self, content: bytes, metadata: dict, *, kind: str, name: str, pad_block: int = PADME
     ) -> bytes:
         meta = json.dumps(metadata, ensure_ascii=False, separators=(",", ":")).encode()
         body = _HEADER.pack(len(meta), len(content)) + meta + content
-        body += b"\0" * (-len(body) % pad_block)
+        body += b"\0" * (padded_length(len(body), pad_block) - len(body))
         nonce = os.urandom(NONCE_SIZE)
         return MAGIC + nonce + self._aead.encrypt(nonce, body, _aad(kind, name))
 

@@ -23,8 +23,8 @@
 
 | 객체 | 경로 | 내용 | 패딩 |
 |---|---|---|---|
-| 원본 | `<prefix>/ab/<name>.bin` | 이미지 + 메타데이터(출처 URL, 파일명, 형식, 수집 시각) | 64 KiB |
-| 썸네일 | `<prefix>/thumbs/cd/<thumb>.bin` | 최대 320px WebP | 4 KiB |
+| 원본 | `<prefix>/ab/<name>.bin` | 이미지 + 메타데이터(출처 URL, 파일명, 형식, 수집 시각) | Padmé (최소 4 KiB, 2026-10-31 전에는 64 KiB) |
+| 썸네일 | `<prefix>/thumbs/cd/<thumb>.bin` | 최대 320px WebP | Padmé (최소 4 KiB, 전에는 4 KiB 단위) |
 | 인덱스 조각 | `<prefix>/index/<시각>-<난수>.bin` | 이미지 목록(JSON): 원본·썸네일 이름, 사이트, 파일명, 크기, 가로세로, 수집 시각 | 4 KiB |
 
 - `name` = HMAC-SHA256(이름 키, 원본 내용), `thumb` = HMAC-SHA256(이름 키, `"thumb:" + name`)

@@ -5,7 +5,7 @@ from PIL import Image
 from image_crawler import layout
 from image_crawler.archive import Archive
 from image_crawler.cli import main
-from image_crawler.crypto import KIND_IMAGE, KIND_THUMB, Vault
+from image_crawler.crypto import KIND_IMAGE, KIND_THUMB, Vault, padme
 from image_crawler.storage.local import LocalStorage
 from image_crawler.thumbs import THUMB_SIZE, make_preview
 
@@ -66,7 +66,8 @@ def test_store_writes_image_thumbnail_and_index(tmp_path, key_file):
         archive.storage.get(layout.thumb_key(first["thumb"])), kind=KIND_THUMB, name=first["thumb"]
     )
     assert Image.open(io.BytesIO(thumb.content)).size == (THUMB_SIZE, 240)
-    assert len(archive.storage.get(layout.thumb_key(first["thumb"]))) % 4096 == 32  # small padding
+    padded = len(archive.storage.get(layout.thumb_key(first["thumb"]))) - 32
+    assert padded >= 4096 and padme(padded) == padded  # Padmé-padded, 4 KiB minimum
     assert archive.open_image(name).content == photo
     assert sorted(archive.image_names()) == sorted([name, entries[1]["object"]])
 

@@ -8,12 +8,12 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from image_crawler.crypto import (
     KIND_IMAGE,
     KIND_THUMB,
-    PAD_BLOCK,
     SMALL_PAD_BLOCK,
     DecryptionError,
     Vault,
     generate_key_file,
     load_key_file,
+    padme,
 )
 
 IMG = {"kind": KIND_IMAGE, "name": "a" * 64}
@@ -37,14 +37,39 @@ def test_blob_hides_content_and_metadata():
     assert b"AAAAAAAA" not in blob
 
 
-def test_sizes_are_padded_to_buckets():
+OVERHEAD = 4 + 12 + 16  # magic, nonce, GCM tag
+
+
+def test_sizes_are_padded():
     vault = Vault(os.urandom(32))
+    # Tiny images and thumbnails all fill the 4 KiB minimum.
     small = vault.seal(os.urandom(10), {}, **IMG)
-    larger = vault.seal(os.urandom(30_000), {"x": "y"}, **IMG)
-    assert len(small) == len(larger)
-    assert (len(small) - 4 - 12 - 16) % PAD_BLOCK == 0
-    thumb = vault.seal(os.urandom(10), {}, kind=KIND_THUMB, name="t", pad_block=SMALL_PAD_BLOCK)
-    assert len(thumb) - 4 - 12 - 16 == SMALL_PAD_BLOCK
+    thumb = vault.seal(os.urandom(1000), {"x": "y"}, kind=KIND_THUMB, name="t")
+    assert len(small) - OVERHEAD == len(thumb) - OVERHEAD == SMALL_PAD_BLOCK
+    # Nearby sizes land in the same Padmé bucket; the overhead stays small.
+    a = vault.seal(os.urandom(37_000), {}, **IMG)
+    b = vault.seal(os.urandom(38_500), {}, **IMG)
+    assert len(a) == len(b) and len(a) - OVERHEAD == 38_912
+    index = vault.seal(os.urandom(10), {}, kind="index", name="i", pad_block=SMALL_PAD_BLOCK)
+    assert len(index) - OVERHEAD == SMALL_PAD_BLOCK
+
+
+def test_padme_bounds():
+    previous = 0
+    for length in [*range(2, 5000), *range(5000, 10_000_000, 9_973)]:
+        padded = padme(length)
+        assert padded >= length and padded >= previous  # never shrinks, never reorders
+        assert padded - length <= length * 0.12          # Padmé's overhead bound
+        previous = padded
+    assert len({padme(n) for n in range(32_768, 65_536)}) == 17  # 2 KiB steps at 32-64 KB
+
+
+def test_blobs_padded_the_old_way_still_open():
+    vault = Vault(os.urandom(32))
+    content = os.urandom(30_000)
+    old = vault.seal(content, {"a": 1}, **IMG, pad_block=64 * 1024)  # how images were padded before
+    assert len(old) - OVERHEAD == 64 * 1024
+    assert vault.open(old, **IMG).content == content
 
 
 def test_wrong_key_is_rejected():

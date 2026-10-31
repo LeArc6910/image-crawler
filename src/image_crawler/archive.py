@@ -74,7 +74,6 @@ class Archive:
                 {"content_type": "image/webp"},
                 kind=KIND_THUMB,
                 name=thumb,
-                pad_block=SMALL_PAD_BLOCK,
             )
             self.storage.put(layout.thumb_key(thumb), blob)
         entry = {"object": name, "thumb": thumb, "size": len(content)}
