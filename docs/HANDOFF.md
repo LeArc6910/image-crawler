@@ -53,7 +53,10 @@
 - `main` 생성·푸시, 기본 브랜치를 `main`으로 변경, 저장소 **공개** 전환(전 커밋 기록에 비밀 값 없음 확인), Pages 소스 GitHub Actions
 - *Deploy viewer* 첫 실행 성공 → **https://learc6910.github.io/image-crawler/**
   (헤드리스 Chromium 휴대폰 화면에서 연결 화면 표시, service worker 등록, 콘솔 오류 0)
-- 남은 것: 아래 3~5 (CORS 등록, 읽기 전용 토큰 + `viewer-export`, 실기기 확인)
+- CORS 등록 완료·확인: `learc6910.github.io`의 GET 사전 요청만 204, PUT·다른 출처는 403.
+  배포된 뷰어 주소에서 앱 코드(`s3.js`·`vault.js`)로 실제 R2에 서명 요청 → 목록 → 인덱스 복호화(26개)
+  → 썸네일(WebP)·원본(JPEG) 복호화 성공, 틀린 키는 거부, 콘솔 오류 0 (테스트 키 + `verify-test/`)
+- 남은 것: 아래 4~5 (읽기 전용 토큰 + `viewer-export`, 실기기 확인)
 
 
 1. `main` 브랜치 만들기 — **사용자 승인 후** 이 브랜치로 생성/푸시 (또는 사용자가 직접)

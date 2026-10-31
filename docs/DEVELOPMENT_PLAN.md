@@ -90,7 +90,8 @@ Cloudflare는 R2에 사용 상한을 제공하지 않는다(예산 알림은 이
 | 재복원 | `restore --limit 5` 한 번 더 | 이미 받은 5개는 건너뛰고(`already present 5`) 새로 5개 → 받은 적 있는 파일은 한도에 세지 않음 |
 
 - 발견해 고친 점: `usage`가 1 GB 미만 사용량을 `0.00 GB`로 보여 줘 비어 있는 것처럼 보였음 → 1 GB 미만은 MB로 표시 (`2.9 MB`)
-- 아직 미검증: Cloudflare 사용량 조회(1.10, `CLOUDFLARE_API_TOKEN` 필요), PWA가 실제 R2를 읽는 흐름(CORS 등록 후 3-2에서)
+- 뷰어 쪽: 배포된 주소(https://learc6910.github.io/image-crawler/)에서 실제 R2로 CORS 통과, 목록·인덱스·썸네일·원본 복호화 성공 (2026-10-31)
+- 아직 미검증: Cloudflare 사용량 조회(1.10, `CLOUDFLARE_API_TOKEN` 필요), 실제 휴대폰
 - 테스트 데이터(`verify-test/`, 약 2.9 MB)는 버킷에 남아 있다. 지우려면 대시보드에서 `verify-test/` 폴더 삭제
 
 ### Phase 2 — PWA 뷰어 (핵심 기능)
