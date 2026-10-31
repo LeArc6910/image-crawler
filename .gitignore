@@ -1,0 +1,15 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/
+
+# Local runtime data: never commit the key, crawl history or vault
+config.toml
+sites.txt
+key
+*.key
+state.db
+vault/
+restored/

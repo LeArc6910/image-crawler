@@ -1,0 +1,3 @@
+# One URL per line. Lines starting with # are ignored.
+# Manage this file with `image-crawler add URL` / `image-crawler remove URL`.
+https://example.com/gallery

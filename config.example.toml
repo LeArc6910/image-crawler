@@ -1,0 +1,41 @@
+# Copy to config.toml and adjust. Relative paths are resolved against this file's directory.
+
+sites_file = "sites.txt"                 # one URL per line; manage with `image-crawler add/remove`
+state_db   = "~/.image-crawler/state.db" # local crawl history (contains plaintext URLs, stays local)
+key_file   = "~/.image-crawler/key"      # created by `image-crawler keygen` — BACK IT UP OFFLINE
+
+[crawl]
+max_depth          = 1         # 0 = only the registered page, 1 = also pages it links to (same host)
+max_pages_per_site = 50
+delay_seconds      = 1.0       # minimum gap between requests to the same host (robots.txt Crawl-delay wins if larger)
+timeout_seconds    = 20.0
+max_retries        = 2         # retries on HTTP 429/503, honouring Retry-After
+min_image_bytes    = 5000      # skip icons / tracking pixels
+max_image_bytes    = 50000000
+respect_robots_txt = true
+user_agent         = "image-crawler/0.1 (+mailto:you@example.com)"
+
+# ---------------------------------------------------------------------------
+# Storage. Every image is AES-256-GCM encrypted *before* upload, whichever
+# backend you pick: the provider only sees random-named, padded blobs.
+# ---------------------------------------------------------------------------
+[storage]
+backend = "s3"   # local | s3 | rclone
+
+[storage.local]
+path = "vault"
+
+# Any S3-compatible service. Credentials come from AWS_ACCESS_KEY_ID /
+# AWS_SECRET_ACCESS_KEY (or ~/.aws/credentials), never from this file.
+# Backblaze B2 example (endpoint is shown on the bucket page):
+[storage.s3]
+bucket       = "my-image-vault"
+prefix       = "images"
+endpoint_url = "https://s3.us-west-004.backblazeb2.com"
+region       = "us-west-004"
+# force_path_style = true   # needed by some gateways (e.g. Filen CLI's S3 server)
+
+# Any rclone remote: configure it first with `rclone config`.
+# e.g. "filen:image-vault", "mega:image-vault", "pcloud:image-vault"
+[storage.rclone]
+remote = "filen:image-vault"
