@@ -81,6 +81,19 @@
 4. 사용자: 휴대폰용 토큰(**Object Read only**) 발급 → `image-crawler viewer-export` → 휴대폰에서 QR 스캔 → 홈 화면에 추가
 5. 실기기 확인: 특히 iOS Safari의 카메라 QR 스캔, 홈 화면 설치, 자동 잠금
 
+### 3-2b. PC 작업 결과 (LOCAL_HANDOFF.md, 2026-10-31 사용자 보고)
+
+- 실제 키: PC에서 `keygen` 1회 (`--force` 없음). 백업: 같은 드라이브 사본(SHA-256 일치) + 다른 장치 오프라인 백업
+- `viewer-export`: `✓ viewer token can read the bucket and cannot write to it`
+- 휴대폰 Android / Chrome: QR 스캔 연결, 홈 화면 앱 실행, 자동 잠금 후 비밀번호로 다시 열기 모두 정상 (갤러리는 비어 있음)
+- 클라우드 환경 변수 `IMAGE_CRAWLER_KEY`, `CLOUDFLARE_API_TOKEN`(Account Analytics Read) 등록
+- `CLOUDFLARE_API_TOKEN`으로 `/accounts` 조회 시 계정 0개 → 계정 ID는 여전히 사용자에게 받는다
+
+**사고 (2026-10-31, 클라우드 세션):** 실제 `IMAGE_CRAWLER_KEY`가 있는 환경에서 `pytest`를 돌리자 테스트가 테스트 키 대신
+실제 키를 읽었고, `test_viewer`의 실패 메시지에 실제 키의 **암호화 하위 키**(이미지 복호화 가능)가 세션 출력에 찍혔다.
+커밋·푸시·업로드는 없었다. 조치: `tests/conftest.py`의 autouse 픽스처가 실제 비밀 환경 변수를 모두 지우고,
+키 비교는 해시로 한다. 실제 데이터를 올리기 전이라 키 교체 여부를 사용자에게 물었다.
+
 ### 3-3. 클라우드에서 실제 크롤링 시작 (PC 작업이 끝난 뒤)
 
 크롤러는 이 클라우드 환경에서 돌린다(사용자 결정). 컨테이너가 매번 비므로 키는 환경 변수, 기록은 `state_sync`로 R2에 둔다.
@@ -123,6 +136,9 @@ state_sync 실제 R2 검증 (테스트 키 + `verify-test/`): 기존 폴더에�
 사용자가 휴대폰에서 실제로 써 본 피드백을 반영해 순서를 정한다.
 
 ## 4. 알아둘 점
+
+- 테스트는 실제 비밀 환경 변수(`IMAGE_CRAWLER_KEY`, `AWS_*`, `CLOUDFLARE_API_TOKEN` 등)를 자동으로 지운 채 돈다
+  (`tests/conftest.py`). 새 테스트도 키 값을 직접 비교·출력하지 말고 해시로 비교한다.
 
 - moto의 S3 서버는 이미 있는 객체에 대한 CORS 사전 요청(OPTIONS)에 403을 돌려준다 (실제 S3/R2와 다름).
   `tests/test_pwa.py`의 `r2_like` 중계가 버킷 CORS 규칙으로 대신 응답한다.

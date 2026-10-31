@@ -50,6 +50,28 @@ class FakeSite:
         self.server.server_close()
 
 
+# Real secrets that a cloud environment or a user's shell may export. Tests must never see
+# them: the real key would replace the test key files (and a failing assertion could print
+# key material), and real credentials could point a test at the real bucket.
+REAL_SECRETS = (
+    "IMAGE_CRAWLER_KEY",
+    "IMAGE_CRAWLER_VIEWER_KEY_ID",
+    "IMAGE_CRAWLER_VIEWER_SECRET",
+    "IMAGE_CRAWLER_VIEWER_PASSPHRASE",
+    "CLOUDFLARE_API_TOKEN",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_secrets(monkeypatch):
+    for name in REAL_SECRETS:
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def site():
     s = FakeSite()

@@ -90,7 +90,10 @@ def test_viewer_export_writes_a_private_bundle(tmp_path, key_file, monkeypatch, 
     assert png.read_bytes().startswith(b"\x89PNG")
     opened = open_bundle(out.read_text(), PASS)
     assert opened["a"] == "ro-id" and opened["b"] == "vault"
-    assert opened["k"] == __import__("base64").b64encode(Vault.from_key_file(key_file).encryption_key).decode()
+    expected = __import__("base64").b64encode(Vault.from_key_file(key_file).encryption_key).decode()
+    # Compare digests so a failure can never print key material.
+    digest = lambda text: __import__("hashlib").sha256(text.encode()).hexdigest()
+    assert digest(opened["k"]) == digest(expected)
     assert "ro-secret" not in capsys.readouterr().out
 
 
