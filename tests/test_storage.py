@@ -20,6 +20,9 @@ def exercise(storage):
     assert sorted(storage.list()) == [key, "index/seg-1.bin"]
     assert list(storage.list("index/")) == ["index/seg-1.bin"]
     assert list(storage.list("thumbs/")) == []
+    storage.delete("index/seg-1.bin")
+    storage.delete("index/missing.bin")
+    assert list(storage.list("index/")) == []
 
 
 def test_local_storage(tmp_path):
@@ -36,7 +39,7 @@ def test_s3_storage_and_cors():
     storage = S3Storage("vault", prefix="images", client=client)
     exercise(storage)
     keys = sorted(o["Key"] for o in client.list_objects_v2(Bucket="vault")["Contents"])
-    assert keys == ["images/ab/ab" + "0" * 62 + ".bin", "images/index/seg-1.bin"]
+    assert keys == ["images/ab/ab" + "0" * 62 + ".bin"]
 
     storage.set_cors(["https://me.github.io"])
     rule = client.get_bucket_cors(Bucket="vault")["CORSRules"][0]

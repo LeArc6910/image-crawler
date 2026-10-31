@@ -9,7 +9,7 @@ sites.txt ──► 크롤러 ──► 이미지 다운로드 ──► 썸네�
                 └─ robots.txt 준수, 호스트별 요청 간격, 429 백오프, 중복 제거
 ```
 
-원본과 함께 암호화된 **썸네일**과 **목록(인덱스)** 도 올라가므로, 휴대폰 PWA 뷰어(개발 중)가 원본을 받지 않고도
+원본과 함께 암호화된 **썸네일**과 **목록(인덱스)** 도 올라가므로, 휴대폰 PWA 뷰어(`pwa/`)가 원본을 받지 않고도
 갤러리를 보여줄 수 있습니다. 앞으로의 개발 항목은 [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md)에 있습니다.
 
 ## 설치
@@ -33,6 +33,8 @@ image-crawler remove https://another.example/photos
 image-crawler reindex                        # 인덱스에 빠진 이미지(이전 버전 업로드분, 중단된 실행)의 썸네일·목록 보충
 image-crawler cors --origin https://you.github.io   # PWA 뷰어 주소에서 버킷을 읽도록 허용 (S3/R2)
 image-crawler usage                          # 이번 달 R2 사용량 / 한도
+image-crawler check                          # 키·자격 증명·버킷 접근을 단계별로 점검
+image-crawler viewer-export                  # 휴대폰 뷰어용 연결 정보(QR) 만들기
 ```
 
 주기적으로 돌리려면 cron 등에 등록하면 됩니다. 이미 받은 URL과 같은 내용의 이미지는 자동으로 건너뜁니다.
@@ -42,6 +44,27 @@ image-crawler usage                          # 이번 달 R2 사용량 / 한도
 # 매일 아침 사용량 점검: 한도의 80% 이상이면 종료 코드 1 → 원하는 알림 명령 연결
 0 9 * * *   cd /path/to/workdir && image-crawler usage --check || <알림 명령>
 ```
+
+## 휴대폰 뷰어 (PWA)
+
+`pwa/`는 빌드 과정 없는 정적 웹앱입니다. 휴대폰 브라우저 안에서 목록·썸네일·원본을 R2에서 받아 **기기 안에서만**
+복호화합니다. 휴대폰에는 비밀번호로 잠긴 연결 정보만 저장되고, 열 때마다 비밀번호를 입력합니다.
+10분 동안 조작이 없거나 앱이 1분 넘게 백그라운드에 있으면 자동으로 잠깁니다.
+
+1. **휴대폰용 R2 토큰 발급**: Cloudflare → R2 → API 토큰 → 해당 버킷 **Object Read only**
+2. **뷰어 배포 (GitHub Pages)**: 저장소 Settings → Pages → Source를 **GitHub Actions**로 설정한 뒤,
+   `main`에 반영하거나 Actions 탭에서 *Deploy viewer*를 수동 실행 → `https://<사용자>.github.io/<저장소>/`
+   - 뷰어는 저장소(Cloudflare)와 **다른 회사**(GitHub)에서 배포하세요. 한 회사가 암호문과 앱 코드를 모두 쥐면,
+     앱 코드를 바꿔 키를 빼돌릴 수 있기 때문입니다.
+   - 비공개 저장소에서 Pages를 쓰려면 GitHub 유료 요금제가 필요합니다. 뷰어 코드에는 비밀이 없으므로 공개돼도 됩니다.
+3. **CORS 등록**: `image-crawler cors --origin https://<사용자>.github.io`
+4. **연결 정보 만들기**: `image-crawler viewer-export` → 휴대폰 토큰 ID/비밀키와 뷰어 비밀번호(10자 이상) 입력
+   - 토큰이 읽기 전용인지(쓰기가 거부되는지) 자동으로 확인합니다.
+   - 터미널에 QR이 표시됩니다. `--qr-png qr.png`로 이미지 저장도 가능합니다(사용 후 삭제).
+5. **휴대폰**: 뷰어 주소 열기 → *QR 스캔* → 비밀번호 → *연결* → 브라우저 메뉴에서 **홈 화면에 추가**
+
+연결 정보에는 원본 키가 들어가지 않습니다(복호화 키 + 읽기 전용 토큰만). 그래도 유출이 의심되면 R2에서 휴대폰
+토큰을 폐기하고 새로 만드세요.
 
 ## R2 무료 한도 보호
 

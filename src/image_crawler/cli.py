@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import logging
+import os
 import re
+import secrets
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -12,11 +15,13 @@ from image_crawler.archive import Archive
 from image_crawler.config import load_config
 from image_crawler.crawler import Crawler, CrawlStats
 from image_crawler.crypto import KIND_IMAGE, DecryptionError, Vault, generate_key_file
+from image_crawler.doctor import explain, run_checks
 from image_crawler.quota import GB, FREE_TIER, GuardedStorage, QuotaExceeded, Usage, measure, soft_limits
 from image_crawler.sites import add_sites, read_sites, remove_sites
 from image_crawler.state import State
 from image_crawler.storage import Storage, build_storage
 from image_crawler.storage.s3 import S3Storage
+from image_crawler.viewer import MIN_PASSPHRASE, make_bundle, seal_bundle
 
 EXIT_QUOTA = 3
 
@@ -267,6 +272,102 @@ def cmd_usage(args, cfg) -> int:
     return 1 if (args.check and near) else 0
 
 
+def cmd_check(args, cfg) -> int:
+    ok = run_checks(cfg, lambda state: _open_storage(cfg, state))
+    return 0 if ok else 1
+
+
+def _secret(env: str, prompt: str) -> str:
+    value = os.environ.get(env) or getpass.getpass(prompt)
+    if not value:
+        raise ValueError(f"{prompt.rstrip(': ')} is required (or set {env})")
+    return value
+
+
+def _passphrase() -> str:
+    if env := os.environ.get("IMAGE_CRAWLER_VIEWER_PASSPHRASE"):
+        return env
+    first = getpass.getpass(f"Viewer passphrase (min {MIN_PASSPHRASE} chars, typed on the phone): ")
+    if getpass.getpass("Repeat passphrase: ") != first:
+        raise ValueError("passphrases do not match")
+    return first
+
+
+def verify_read_only(client, bucket: str, prefix: str) -> None:
+    """The phone's token must be able to list/read the bucket and must NOT be able to write."""
+    from botocore.exceptions import ClientError
+
+    client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
+    probe = f"{prefix}check/viewer-write-probe-{secrets.token_hex(6)}.bin"
+    try:
+        client.put_object(Bucket=bucket, Key=probe, Body=b"")
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") in ("AccessDenied", "Unauthorized", "403"):
+            return
+        raise
+    client.delete_object(Bucket=bucket, Key=probe)
+    raise ValueError(
+        "the viewer token can WRITE to the bucket; create an R2 token with 'Object Read only' for the phone"
+    )
+
+
+def cmd_viewer_export(args, cfg) -> int:
+    """Seal what the phone viewer needs into a passphrase-protected bundle (text and QR)."""
+    if cfg.storage.get("backend") != "s3" or not cfg.storage.get("s3", {}).get("endpoint_url"):
+        print("viewer-export needs the s3 backend with endpoint_url set (e.g. Cloudflare R2)", file=sys.stderr)
+        return 2
+    s3 = cfg.storage["s3"]
+    vault = Vault.from_key_file(cfg.key_file)
+    key_id = _secret("IMAGE_CRAWLER_VIEWER_KEY_ID", "Viewer (read-only) R2 access key id: ")
+    secret = _secret("IMAGE_CRAWLER_VIEWER_SECRET", "Viewer (read-only) R2 secret access key: ")
+    bundle = make_bundle(
+        endpoint=s3["endpoint_url"],
+        region=s3.get("region") or "auto",
+        bucket=s3["bucket"],
+        prefix=s3.get("prefix", ""),
+        access_key_id=key_id,
+        secret_access_key=secret,
+        encryption_key=vault.encryption_key,
+    )
+    if not args.no_verify:
+        import boto3
+
+        client = boto3.client(
+            "s3", endpoint_url=bundle["e"], region_name=bundle["r"],
+            aws_access_key_id=key_id, aws_secret_access_key=secret,
+        )
+        try:
+            verify_read_only(client, bundle["b"], bundle["p"])
+        except Exception as e:
+            print(f"viewer token check failed: {explain(e)}", file=sys.stderr)
+            return 1
+        print("✓ viewer token can read the bucket and cannot write to it")
+
+    text = seal_bundle(bundle, _passphrase())
+    if args.out:
+        fd = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(text + "\n")
+        print(f"bundle written to {args.out}")
+    if args.qr_png:
+        import qrcode
+
+        qrcode.make(text).save(args.qr_png)
+        print(f"QR code written to {args.qr_png}")
+    if not args.out and not args.qr_png:
+        try:
+            import qrcode
+
+            qr = qrcode.QRCode(border=2)
+            qr.add_data(text)
+            qr.print_ascii(invert=True)
+        except ImportError:
+            print("(install 'qrcode' to show a QR code here)")
+        print(text)
+    print("Scan or paste this in the viewer, then enter the passphrase. Delete any saved copy afterwards.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="image-crawler",
@@ -311,6 +412,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--origin", action="append", required=True,
                    help="viewer origin, e.g. https://you.github.io (repeatable)")
     p.set_defaults(func=cmd_cors)
+
+    p = sub.add_parser("check", help="verify key, credentials and bucket access step by step")
+    p.set_defaults(func=cmd_check)
+
+    p = sub.add_parser("viewer-export", help="create the passphrase-protected bundle for the phone viewer")
+    p.add_argument("--out", help="write the bundle text to this file (mode 600) instead of printing it")
+    p.add_argument("--qr-png", help="also save the QR code as a PNG")
+    p.add_argument("--no-verify", action="store_true", help="skip checking that the viewer token is read-only")
+    p.set_defaults(func=cmd_viewer_export)
 
     p = sub.add_parser("usage", help="show this month's R2 usage against the quota")
     p.add_argument("--check", action="store_true",

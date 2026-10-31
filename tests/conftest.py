@@ -74,3 +74,17 @@ def make_photo(width: int, height: int, fmt: str = "JPEG", **save_args) -> bytes
     out = io.BytesIO()
     img.save(out, fmt, **save_args)
     return out.getvalue()
+
+
+@pytest.fixture
+def moto_server(monkeypatch):
+    """An S3-compatible HTTP server (stands in for R2), with dummy credentials set."""
+    from moto.server import ThreadedMotoServer
+
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    server = ThreadedMotoServer(ip_address="127.0.0.1", port=0, verbose=False)
+    server.start()
+    host, port = server.get_host_and_port()
+    yield f"http://{host}:{port}"
+    server.stop()

@@ -20,6 +20,10 @@ class Storage(ABC):
     def exists(self, key: str) -> bool: ...
 
     @abstractmethod
+    def delete(self, key: str) -> None:
+        """Remove a key; deleting a missing key is not an error."""
+
+    @abstractmethod
     def list(self, prefix: str = "") -> Iterator[str]:
         """Yield every key under `prefix` (keys are returned relative to the storage root)."""
 

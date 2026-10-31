@@ -65,6 +65,9 @@ class S3Storage(Storage):
                 return False
             raise
 
+    def delete(self, key: str) -> None:
+        self.client.delete_object(Bucket=self.bucket, Key=self.prefix + key)
+
     def list(self, prefix: str = "") -> Iterator[str]:
         paginator = self.client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix + prefix):
@@ -87,6 +90,17 @@ class S3Storage(Storage):
                 ]
             },
         )
+
+    def cors_origins(self) -> list[str]:
+        from botocore.exceptions import ClientError
+
+        try:
+            rules = self.client.get_bucket_cors(Bucket=self.bucket)["CORSRules"]
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "NoSuchCORSConfiguration":
+                return []
+            raise
+        return [origin for rule in rules for origin in rule.get("AllowedOrigins", [])]
 
     def describe(self) -> str:
         return f"s3://{self.bucket}/{self.prefix}"

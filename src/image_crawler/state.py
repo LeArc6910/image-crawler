@@ -86,6 +86,10 @@ class State:
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO stored VALUES (?, ?, ?)", (target, key, size))
 
+    def forget_stored(self, target: str, key: str) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM stored WHERE target = ? AND key = ?", (target, key))
+
     def stored_bytes(self, target: str) -> int:
         row = self.db.execute("SELECT SUM(bytes) FROM stored WHERE target = ?", (target,)).fetchone()
         return row[0] or 0

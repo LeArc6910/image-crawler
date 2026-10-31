@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src blob:;
+                 connect-src 'self' https://*.r2.cloudflarestorage.com http://127.0.0.1:* http://localhost:*;
+                 manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#111318">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Image Vault">
+  <title>Image Vault</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <!-- First run: import the bundle from `image-crawler viewer-export`. -->
+  <main id="setup" class="screen" hidden>
+    <div class="card">
+      <h1>Image Vault 연결</h1>
+      <p class="muted">PC에서 <code>image-crawler viewer-export</code>로 만든 QR을 스캔하거나 텍스트를 붙여 넣으세요.</p>
+      <button id="scan-button" class="secondary" type="button">QR 스캔</button>
+      <div id="scanner" class="scanner" hidden>
+        <video id="scanner-video" playsinline muted></video>
+        <button id="scan-cancel" class="secondary" type="button">스캔 취소</button>
+      </div>
+      <label for="bundle-input">연결 정보</label>
+      <textarea id="bundle-input" rows="4" spellcheck="false" autocomplete="off" placeholder="ICVIEW1.…"></textarea>
+      <label for="setup-passphrase">비밀번호</label>
+      <input id="setup-passphrase" type="password" autocomplete="current-password">
+      <button id="setup-submit" type="button">연결</button>
+      <p id="setup-error" class="error" role="alert"></p>
+      <p class="muted small">비밀번호는 저장되지 않습니다. 이 기기에는 비밀번호로 잠긴 연결 정보만 남습니다.</p>
+    </div>
+  </main>
+
+  <!-- Bundle stored: ask for the passphrase on every open. -->
+  <main id="lock" class="screen" hidden>
+    <div class="card">
+      <h1>잠김</h1>
+      <label for="lock-passphrase">비밀번호</label>
+      <input id="lock-passphrase" type="password" autocomplete="current-password">
+      <button id="lock-submit" type="button">잠금 해제</button>
+      <p id="lock-error" class="error" role="alert"></p>
+      <button id="forget-button" class="link" type="button">다른 연결 정보 사용 (이 기기에서 삭제)</button>
+    </div>
+  </main>
+
+  <main id="gallery" class="screen" hidden>
+    <header class="toolbar">
+      <select id="site-filter" aria-label="사이트"></select>
+      <span id="count" class="muted small"></span>
+      <button id="refresh-button" class="icon" type="button" title="새로고침" aria-label="새로고침">⟳</button>
+      <button id="lock-button" class="icon" type="button" title="잠그기" aria-label="잠그기">🔒</button>
+    </header>
+    <p id="gallery-status" class="status" role="status"></p>
+    <div id="grid" class="grid"></div>
+  </main>
+
+  <dialog id="viewer" class="viewer">
+    <div class="viewer-image">
+      <img id="viewer-img" alt="">
+      <p id="viewer-status" class="status"></p>
+    </div>
+    <div class="viewer-info">
+      <p id="viewer-title" class="title"></p>
+      <p id="viewer-meta" class="muted small"></p>
+      <p><a id="viewer-source" target="_blank" rel="noopener noreferrer"></a></p>
+    </div>
+    <div class="viewer-actions">
+      <button id="viewer-prev" class="icon" type="button" aria-label="이전">‹</button>
+      <button id="viewer-save" class="secondary" type="button">저장</button>
+      <button id="viewer-share" class="secondary" type="button" hidden>공유</button>
+      <button id="viewer-close" class="secondary" type="button">닫기</button>
+      <button id="viewer-next" class="icon" type="button" aria-label="다음">›</button>
+    </div>
+  </dialog>
+</body>
+</html>

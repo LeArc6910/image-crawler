@@ -163,6 +163,10 @@ class GuardedStorage(Storage):
         self._charge(b=1, limits=self.limits)
         return self.inner.exists(key)
 
+    def delete(self, key: str) -> None:
+        self.inner.delete(key)  # free on R2
+        self.state.forget_stored(self.target, key)
+
     def list(self, prefix: str = "") -> Iterator[str]:
         self._charge(a=1, limits=self.limits)
         for count, key in enumerate(self.inner.list(prefix), 1):

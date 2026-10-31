@@ -49,6 +49,10 @@ class RcloneStorage(Storage):
             return False
         return bool(out.strip())
 
+    def delete(self, key: str) -> None:
+        if self.exists(key):
+            self._run("deletefile", self._target(key))
+
     def list(self, prefix: str = "") -> Iterator[str]:
         # List the deepest directory the prefix names, then filter on the remainder.
         directory = prefix.rsplit("/", 1)[0] + "/" if "/" in prefix else ""

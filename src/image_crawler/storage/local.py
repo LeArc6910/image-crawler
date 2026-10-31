@@ -30,6 +30,9 @@ class LocalStorage(Storage):
     def exists(self, key: str) -> bool:
         return self._path(key).is_file()
 
+    def delete(self, key: str) -> None:
+        self._path(key).unlink(missing_ok=True)
+
     def list(self, prefix: str = "") -> Iterator[str]:
         for path in sorted(self.root.rglob("*")):
             if path.is_file() and path.suffix != ".tmp":

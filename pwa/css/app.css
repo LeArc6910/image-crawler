@@ -1,0 +1,165 @@
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --text: #16181d;
+  --muted: #5f6672;
+  --border: #d9dce2;
+  --accent: #2f6fde;
+  --accent-text: #ffffff;
+  --error: #c62828;
+  --tile: #e3e6eb;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111318;
+    --surface: #1b1e25;
+    --text: #e8eaee;
+    --muted: #9aa1ad;
+    --border: #2d313b;
+    --accent: #5b8ff0;
+    --accent-text: #0d1117;
+    --error: #ff6b6b;
+    --tile: #232731;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+[hidden] { display: none !important; }
+
+.screen { min-height: 100dvh; }
+#setup, #lock { display: grid; place-items: center; padding: 16px; }
+
+.card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  display: grid;
+  gap: 10px;
+}
+
+h1 { font-size: 1.3rem; margin: 0 0 4px; }
+label { font-weight: 600; font-size: 0.9rem; margin-top: 6px; }
+code { font-size: 0.85em; word-break: break-all; }
+
+input, textarea, select {
+  font: inherit;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+}
+textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; resize: vertical; }
+
+button {
+  font: inherit;
+  font-weight: 600;
+  border: 0;
+  border-radius: 10px;
+  padding: 11px 16px;
+  background: var(--accent);
+  color: var(--accent-text);
+  cursor: pointer;
+}
+button:disabled { opacity: 0.55; cursor: progress; }
+button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+button.link { background: none; color: var(--muted); padding: 4px 0; font-weight: 400; text-decoration: underline; }
+button.icon {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  min-width: 42px;
+  padding: 8px 10px;
+  line-height: 1;
+}
+
+.muted { color: var(--muted); margin: 0; }
+.small { font-size: 0.85rem; }
+.error { color: var(--error); margin: 0; min-height: 1.5em; }
+.status { text-align: center; color: var(--muted); margin: 16px; }
+.status:empty { display: none; }
+
+.scanner { display: grid; gap: 8px; }
+.scanner video { width: 100%; border-radius: 10px; background: #000; aspect-ratio: 1; object-fit: cover; }
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: max(10px, env(safe-area-inset-top)) 16px 10px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+.toolbar select { flex: 1; min-width: 0; padding: 8px 10px; }
+.toolbar #count { white-space: nowrap; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: 3px;
+  padding: 3px 3px max(16px, env(safe-area-inset-bottom));
+}
+.tile {
+  aspect-ratio: 1;
+  padding: 0;
+  border-radius: 0;
+  background: var(--tile);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+.tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile.failed { color: var(--error); }
+
+.viewer {
+  width: 100vw;
+  max-width: 100vw;
+  height: 100dvh;
+  max-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: #000;
+  color: #f2f2f2;
+  display: none;
+  grid-template-rows: 1fr auto auto;
+}
+.viewer[open] { display: grid; }
+.viewer::backdrop { background: #000; }
+.viewer-image { position: relative; display: grid; place-items: center; min-height: 0; overflow: auto; touch-action: pan-x pan-y pinch-zoom; }
+.viewer-image img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.viewer-image .status { position: absolute; color: #bbb; }
+.viewer-info { padding: 10px 16px 0; }
+.viewer-info p { margin: 0 0 4px; }
+.viewer-info .title { font-weight: 600; word-break: break-all; }
+.viewer-info .muted { color: #aaa; }
+.viewer-info a { color: #8fb4ff; word-break: break-all; font-size: 0.85rem; }
+.viewer-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  padding: 10px 16px max(12px, env(safe-area-inset-bottom));
+}
+.viewer-actions button.secondary, .viewer-actions button.icon { color: #f2f2f2; border-color: #444; }
