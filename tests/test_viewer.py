@@ -111,6 +111,18 @@ def test_check_command(tmp_path, key_file, monkeypatch, capsys):
     assert "✓ write / read / delete a test object" in out and "CORS for the phone viewer: not set yet" in out
     assert boto3.client("s3", region_name="us-east-1").list_objects_v2(Bucket="vault").get("KeyCount") == 0
 
+    def denied(self):
+        raise ClientError({"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}, "GetBucketCors")
+
+    monkeypatch.setattr(S3Storage, "cors_origins", denied)
+    assert main(["-c", str(config), "check"]) == 0  # an Object Read & Write token can't read CORS: warn only
+    out = capsys.readouterr().out
+    assert "! CORS for the phone viewer: can't read the bucket's CORS policy" in out
+    assert "All checks passed (1 warning(s))." in out
+    monkeypatch.undo()
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+
     config.write_text(config.read_text().replace('bucket = "vault"', 'bucket = "missing"'))
     assert main(["-c", str(config), "check"]) == 1
     assert "check [storage.s3] bucket" in capsys.readouterr().out
