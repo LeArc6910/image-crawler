@@ -1,7 +1,8 @@
 """Local crawl history (SQLite) so re-runs skip images that are already stored.
 
-This database holds plaintext source URLs. It never leaves this machine, but
-keep it on an encrypted disk if that history is sensitive too.
+This database holds plaintext source URLs. It only leaves this machine encrypted,
+when `state_sync` is on (see image_crawler.statesync); keep it on an encrypted
+disk if that history is sensitive too.
 """
 
 from __future__ import annotations
@@ -35,6 +36,10 @@ CREATE TABLE IF NOT EXISTS stored (
     key    TEXT NOT NULL,
     bytes  INTEGER NOT NULL,
     PRIMARY KEY (target, key)
+);
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 """
 
@@ -90,9 +95,21 @@ class State:
         with self.db:
             self.db.execute("DELETE FROM stored WHERE target = ? AND key = ?", (target, key))
 
+    def stored_size(self, target: str, key: str) -> int | None:
+        row = self.db.execute("SELECT bytes FROM stored WHERE target = ? AND key = ?", (target, key)).fetchone()
+        return row[0] if row else None
+
     def stored_bytes(self, target: str) -> int:
         row = self.db.execute("SELECT SUM(bytes) FROM stored WHERE target = ?", (target,)).fetchone()
         return row[0] or 0
+
+    def get_meta(self, key: str) -> str | None:
+        row = self.db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
 
     def close(self) -> None:
         self.db.close()

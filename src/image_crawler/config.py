@@ -57,6 +57,9 @@ class Config:
     crawl: CrawlSettings
     storage: dict = field(default_factory=dict)
     quota: QuotaSettings = field(default_factory=QuotaSettings)
+    # Keep the crawl history (state_db) and the site list in the storage too, encrypted,
+    # so a machine that starts empty every time (a cloud runner) picks up where it left off.
+    state_sync: bool = False
 
 
 def _resolve(base: Path, value: str) -> Path:
@@ -88,4 +91,12 @@ def load_config(path: str | Path | None = None) -> Config:
         crawl=_section(CrawlSettings, data.get("crawl", {}), "crawl"),
         storage=storage,
         quota=_section(QuotaSettings, data.get("quota", {}), "quota"),
+        state_sync=_flag(data, "state_sync"),
     )
+
+
+def _flag(data: dict, name: str) -> bool:
+    value = data.get(name, False)
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be true or false")
+    return value

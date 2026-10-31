@@ -3,6 +3,12 @@
 sites_file = "sites.txt"                 # one URL per line; manage with `image-crawler add/remove`
 state_db   = "~/.image-crawler/state.db" # local crawl history (contains plaintext URLs, stays local)
 key_file   = "~/.image-crawler/key"      # created by `image-crawler keygen` — BACK IT UP OFFLINE
+# On a machine without the key file (e.g. a cloud runner), set IMAGE_CRAWLER_KEY to the key
+# file's contents instead; it takes precedence over key_file.
+
+# Keep state_db and the site list in the storage too (encrypted, state/crawl-state.bin), so a
+# machine that starts empty every run continues where the last run left off. See README.
+state_sync = false
 
 [crawl]
 max_depth          = 1         # 0 = only the registered page, 1 = also pages it links to (same host)

@@ -41,6 +41,11 @@ _HEADER = struct.Struct(">IQ")
 KIND_IMAGE = "image"
 KIND_THUMB = "thumb"
 KIND_INDEX = "index"
+KIND_STATE = "state"
+
+# Where a machine without a key file (e.g. a cloud runner) takes the master key from:
+# the same single base64 line that `image-crawler keygen` writes to the key file.
+KEY_ENV = "IMAGE_CRAWLER_KEY"
 
 
 class DecryptionError(Exception):
@@ -60,14 +65,35 @@ def generate_key_file(path: Path, overwrite: bool = False) -> None:
 def load_key_file(path: Path) -> bytes:
     path = path.expanduser()
     try:
-        key = base64.b64decode(path.read_text().strip(), validate=True)
+        text = path.read_text()
     except FileNotFoundError:
         raise FileNotFoundError(
-            f"key file not found: {path} (create one with `image-crawler keygen`)"
+            f"key file not found: {path} (create one with `image-crawler keygen`, "
+            f"or set {KEY_ENV})"
         ) from None
+    return _decode_key(text, f"key file {path}")
+
+
+def _decode_key(text: str, source: str) -> bytes:
+    try:
+        key = base64.b64decode(text.strip(), validate=True)
+    except ValueError:
+        key = b""
     if len(key) != KEY_SIZE:
-        raise ValueError(f"key file {path} must contain {KEY_SIZE} base64-encoded bytes")
+        raise ValueError(f"{source} must contain {KEY_SIZE} base64-encoded bytes")
     return key
+
+
+def key_source(key_file: Path) -> str:
+    """Where load_master_key() will read the key from, for messages."""
+    return f"{KEY_ENV} (environment)" if os.environ.get(KEY_ENV, "").strip() else str(key_file)
+
+
+def load_master_key(key_file: Path) -> bytes:
+    """The master key from $IMAGE_CRAWLER_KEY if it is set, otherwise from the key file."""
+    if text := os.environ.get(KEY_ENV, "").strip():
+        return _decode_key(text, KEY_ENV)
+    return load_key_file(key_file)
 
 
 def _derive(master_key: bytes, label: bytes) -> bytes:
@@ -95,6 +121,11 @@ class Vault:
     @classmethod
     def from_key_file(cls, path: Path) -> "Vault":
         return cls(load_key_file(path))
+
+    @classmethod
+    def load(cls, key_file: Path) -> "Vault":
+        """$IMAGE_CRAWLER_KEY if set, else the key file (see load_master_key)."""
+        return cls(load_master_key(key_file))
 
     def object_name(self, content: bytes) -> str:
         """Deterministic, keyed name: identical images dedupe, but the name reveals nothing."""

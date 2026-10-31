@@ -5,7 +5,7 @@ from __future__ import annotations
 import secrets
 from typing import Callable
 
-from image_crawler.crypto import load_key_file
+from image_crawler.crypto import Vault, key_source, load_master_key
 from image_crawler.state import State
 from image_crawler.storage import Storage
 from image_crawler.storage.s3 import S3Storage
@@ -63,8 +63,8 @@ def run_checks(cfg, open_storage: Callable[[State], Storage], out: Callable[[str
     out("Checking image-crawler setup")
 
     def key() -> str:
-        load_key_file(cfg.key_file)
-        return str(cfg.key_file)
+        load_master_key(cfg.key_file)
+        return key_source(cfg.key_file)
 
     report.step("encryption key", key)
 
@@ -81,6 +81,13 @@ def run_checks(cfg, open_storage: Callable[[State], Storage], out: Callable[[str
             return False
         report.step("list objects", lambda: _count_some(storage))
         report.step("write / read / delete a test object", lambda: _roundtrip(storage))
+        if getattr(cfg, "state_sync", False):
+            from image_crawler.statesync import describe_backup
+
+            report.step(
+                "crawl state backup (state_sync)",
+                lambda: describe_backup(Vault.load(cfg.key_file), storage),
+            )
         inner = getattr(storage, "inner", storage)
         if isinstance(inner, S3Storage):
             report.step("CORS for the phone viewer", lambda: _cors(inner))

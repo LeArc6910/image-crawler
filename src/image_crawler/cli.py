@@ -7,6 +7,8 @@ import os
 import re
 import secrets
 import sys
+from contextlib import contextmanager, nullcontext
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -16,9 +18,19 @@ from image_crawler.config import load_config
 from image_crawler.crawler import Crawler, CrawlStats
 from image_crawler.crypto import KIND_IMAGE, DecryptionError, Vault, generate_key_file
 from image_crawler.doctor import explain, run_checks
-from image_crawler.quota import GB, FREE_TIER, GuardedStorage, QuotaExceeded, Usage, measure, soft_limits
+from image_crawler.quota import (
+    GB,
+    FREE_TIER,
+    GuardedStorage,
+    QuotaExceeded,
+    Usage,
+    billing_period,
+    measure,
+    soft_limits,
+)
 from image_crawler.sites import add_sites, read_sites, remove_sites
 from image_crawler.state import State
+from image_crawler.statesync import StateSync
 from image_crawler.storage import Storage, build_storage
 from image_crawler.storage.s3 import S3Storage
 from image_crawler.viewer import MIN_PASSPHRASE, make_bundle, seal_bundle
@@ -36,8 +48,14 @@ def cmd_keygen(args, cfg) -> int:
     return 0
 
 
+def _sites_session(cfg):
+    """With state_sync, site list changes are pulled first and pushed back like crawl state."""
+    return _session(cfg, storage=False) if cfg.state_sync else nullcontext()
+
+
 def cmd_add(args, cfg) -> int:
-    added = add_sites(cfg.sites_file, args.urls)
+    with _sites_session(cfg):
+        added = add_sites(cfg.sites_file, args.urls)
     for url in added:
         print(f"added {url}")
     if not added:
@@ -46,7 +64,8 @@ def cmd_add(args, cfg) -> int:
 
 
 def cmd_remove(args, cfg) -> int:
-    removed = remove_sites(cfg.sites_file, args.urls)
+    with _sites_session(cfg):
+        removed = remove_sites(cfg.sites_file, args.urls)
     for url in removed:
         print(f"removed {url}")
     if not removed:
@@ -55,7 +74,8 @@ def cmd_remove(args, cfg) -> int:
 
 
 def cmd_sites(args, cfg) -> int:
-    sites = read_sites(cfg.sites_file)
+    with _sites_session(cfg):
+        sites = read_sites(cfg.sites_file)
     if not sites:
         print(f"no sites registered in {cfg.sites_file}")
     for url in sites:
@@ -77,6 +97,51 @@ def _open_storage(cfg, state: State) -> Storage:
     return GuardedStorage(storage, cfg.quota, state, report.effective, report.period_start.isoformat())
 
 
+@contextmanager
+def _session(cfg, *, storage: bool = True):
+    """Open the crawl state and (optionally) the quota-guarded storage for one command.
+
+    With state_sync, the state is first pulled from the storage and, when the command is
+    done (even if it failed), pushed back if it changed. Yields (state, storage or None).
+    """
+    sync = None
+    if cfg.state_sync:
+        sync = StateSync(Vault.load(cfg.key_file), build_storage(cfg.storage), cfg.state_db, cfg.sites_file)
+        sync.pull()
+    state = State(cfg.state_db)
+    try:
+        if sync:
+            _meter_pull(cfg, state, sync)
+        opened = _open_storage(cfg, state) if storage else None
+        if sync:
+            sync.begin(state)
+        try:
+            yield state, opened
+        finally:
+            if sync:
+                _push_state(cfg, sync, state, opened)
+    finally:
+        state.close()
+
+
+def _meter_pull(cfg, state: State, sync: StateSync) -> None:
+    """Count pull()'s requests (made before the meter could be opened) toward the quota."""
+    if _quota_applies(cfg, sync.storage):
+        start, _ = billing_period(datetime.now(timezone.utc).date(), cfg.quota.billing_day)
+        state.add_ops(sync.storage.describe(), start.isoformat(), class_b=sync.pull_requests)
+
+
+def _push_state(cfg, sync: StateSync, state: State, storage: Storage | None) -> None:
+    try:
+        if not sync.changed(state):
+            return
+        generation = sync.push(state, storage or _open_storage(cfg, state))
+    except Exception as e:
+        print(f"warning: crawl state not backed up to storage: {explain(e)}", file=sys.stderr)
+        return
+    print(f"crawl state backed up to storage (generation {generation})")
+
+
 def _percentages(cfg, usage: Usage) -> dict[str, float]:
     limits = soft_limits(cfg.quota)
     return {
@@ -93,19 +158,18 @@ def _warn_if_near(cfg, usage: Usage) -> None:
 
 
 def cmd_crawl(args, cfg) -> int:
-    sites = args.site or read_sites(cfg.sites_file)
-    if not sites:
-        print(f"no sites to crawl; add some with `image-crawler add URL` ({cfg.sites_file})")
-        return 1
     if args.max_depth is not None:
         cfg.crawl.max_depth = args.max_depth
     if args.max_pages is not None:
         cfg.crawl.max_pages_per_site = args.max_pages
 
-    state = State(cfg.state_db)
-    try:
-        archive = Archive(Vault.from_key_file(cfg.key_file), _open_storage(cfg, state))
-        storage = archive.storage
+    with _session(cfg) as (state, storage):
+        # Read after the session opens: with state_sync the site list comes from the storage.
+        sites = args.site or read_sites(cfg.sites_file)
+        if not sites:
+            print(f"no sites to crawl; add some with `image-crawler add URL` ({cfg.sites_file})")
+            return 1
+        archive = Archive(Vault.load(cfg.key_file), storage)
         if isinstance(storage, GuardedStorage):
             over = [n for n, pct in _percentages(cfg, storage.used).items() if pct >= 100]
             if over:
@@ -125,8 +189,6 @@ def cmd_crawl(args, cfg) -> int:
                 break
         if not crawler.stop_reason:
             _auto_compact(archive)
-    finally:
-        state.close()
     if len(sites) > 1:
         print(f"total: {_format_stats(total)}")
     return EXIT_QUOTA if crawler.stop_reason else 0
@@ -143,15 +205,12 @@ def _auto_compact(archive: Archive) -> None:
 
 
 def cmd_compact(args, cfg) -> int:
-    state = State(cfg.state_db)
     try:
-        archive = Archive(Vault.from_key_file(cfg.key_file), _open_storage(cfg, state))
-        before, after = archive.compact()
+        with _session(cfg) as (_, storage):
+            before, after = Archive(Vault.load(cfg.key_file), storage).compact()
     except QuotaExceeded as e:
         print(f"stopped: {e}")
         return EXIT_QUOTA
-    finally:
-        state.close()
     print(f"index segments: {before} -> {after}")
     return 0
 
@@ -190,19 +249,21 @@ def _blobs_in_dir(root: Path):
 
 def cmd_restore(args, cfg) -> int:
     """Download (or read) encrypted blobs, decrypt them and write the original images."""
-    vault = Vault.from_key_file(cfg.key_file)
-    out_dir = Path(args.out).expanduser()
-
+    vault = Vault.load(cfg.key_file)
     if args.from_dir:
-        items = _blobs_in_dir(Path(args.from_dir).expanduser())
-    else:
-        archive = Archive(vault, _open_storage(cfg, State(cfg.state_db)))
-        print(f"restoring from {archive.storage.describe()}")
+        return _restore(args, vault, _blobs_in_dir(Path(args.from_dir).expanduser()))
+    with _session(cfg) as (_, storage):
+        archive = Archive(vault, storage)
+        print(f"restoring from {storage.describe()}")
         items = (
-            (n, (lambda n=n: archive.storage.get(layout.image_key(n))))
+            (n, (lambda n=n: storage.get(layout.image_key(n))))
             for n in archive.image_names()
         )
+        return _restore(args, vault, items)
 
+
+def _restore(args, vault: Vault, items) -> int:
+    out_dir = Path(args.out).expanduser()
     restored = failed = existing = 0
     for name, load in items:
         if args.limit is not None and restored >= args.limit:
@@ -236,7 +297,11 @@ def cmd_restore(args, cfg) -> int:
 
 def cmd_reindex(args, cfg) -> int:
     """Add thumbnails and index entries for stored images the index doesn't know about yet."""
-    archive = Archive(Vault.from_key_file(cfg.key_file), _open_storage(cfg, State(cfg.state_db)))
+    with _session(cfg) as (_, storage):
+        return _reindex(Archive(Vault.load(cfg.key_file), storage))
+
+
+def _reindex(archive: Archive) -> int:
     print(f"checking {archive.storage.describe()}")
     indexed = {entry["object"] for entry in archive.read_index()}
     missing = [n for n in archive.image_names() if n not in indexed]
@@ -276,11 +341,8 @@ def cmd_usage(args, cfg) -> int:
     if not _quota_applies(cfg, storage):
         print("quota tracking applies to the s3 backend (Cloudflare R2) with [quota] enabled")
         return 0
-    state = State(cfg.state_db)
-    try:
+    with _session(cfg, storage=False) as (state, _):
         report = measure(cfg.quota, state, storage.describe())
-    finally:
-        state.close()
 
     limits, usage, cloud = soft_limits(cfg.quota), report.effective, report.cloudflare
     print(f"R2 usage {report.period_start} ~ {report.period_end} (UTC), {storage.describe()}")
@@ -351,7 +413,7 @@ def cmd_viewer_export(args, cfg) -> int:
         print("viewer-export needs the s3 backend with endpoint_url set (e.g. Cloudflare R2)", file=sys.stderr)
         return 2
     s3 = cfg.storage["s3"]
-    vault = Vault.from_key_file(cfg.key_file)
+    vault = Vault.load(cfg.key_file)
     key_id = _secret("IMAGE_CRAWLER_VIEWER_KEY_ID", "Viewer (read-only) R2 access key id: ")
     secret = _secret("IMAGE_CRAWLER_VIEWER_SECRET", "Viewer (read-only) R2 secret access key: ")
     bundle = make_bundle(
