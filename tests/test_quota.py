@@ -241,6 +241,8 @@ def test_crawl_stops_at_quota_and_keeps_index_consistent(site, tmp_path, key_fil
     assert main(["-c", str(config), "usage"]) == 0
     usage = capsys.readouterr().out
     assert "storage" in usage and "Class A" in usage and "counts cover this machine only" in usage
+    # Small totals are shown in MB rather than rounding to "0.00 GB"; limits stay in GB.
+    assert " MB" in usage and " 0.00 GB" not in usage and "9.00 GB" in usage
 
     # A tight storage limit is enforced before any crawling starts.
     with config.open("a") as f:

@@ -2,15 +2,16 @@
 
 다음 세션은 이 문서와 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)를 먼저 읽고 이어서 진행한다.
 
-- 작업 브랜치: `claude/trusting-pascal-5q25bw` (저장소에 있는 유일한 브랜치, `main` 없음)
-- 테스트: `pip install -e '.[dev]'` 후 `NO_PROXY=127.0.0.1,localhost pytest` → 56개 통과 상태
+- 작업 브랜치: `claude/festive-lovelace-7mpo4j` (`claude/trusting-pascal-5q25bw`에서 이어 받음, `main` 없음)
+- 테스트: `pip install -e '.[dev]'` 후 `NO_PROXY=127.0.0.1,localhost python -m pytest` → 56개 통과 상태
+  (`pytest` 명령이 다른 Python에 묶여 있으면 의존성을 못 찾으므로 `python -m pytest`를 쓴다)
 - 사용자와는 한국어로 대화한다.
 
 ## 1. 현재 상태
 
 | 영역 | 상태 |
 |---|---|
-| 크롤러 (수집·암호화·썸네일·목록·reindex·restore) | 완료 |
+| 크롤러 (수집·암호화·썸네일·목록·reindex·restore) | 완료, 실제 R2에서 검증 |
 | R2 무료 한도 보호 (`usage`, 요청 계량·차단) | 완료 |
 | 점검 (`check`), 휴대폰용 연결 정보 (`viewer-export`) | 완료 |
 | PWA 뷰어 (`pwa/`): 연결·잠금·갤러리·원본 보기·암호문 캐시·요청 폭주 방지 | 완료 (헤드리스 Chromium 테스트만, 실기기 미검증) |
@@ -41,13 +42,11 @@
 
 ## 3. 다음 세션에서 할 일 (순서대로)
 
-### 3-1. 실제 R2 크롤링 검증 (키가 있는 세션에서)
+### 3-1. 실제 R2 크롤링 검증 — ✅ 완료 (2026-10-31)
 
-1. `image-crawler check` 다시 통과 확인
-2. 작은 크롤링: `image-crawler crawl --max-pages 2` (테스트용 사이트 1개)
-3. `image-crawler usage`로 집계 확인, `image-crawler reindex` → `0 missing` 확인
-4. `image-crawler restore --out <scratchpad>/restored --limit 5`로 복원 확인
-5. 결과를 DEVELOPMENT_PLAN.md의 검증 결과에 기록
+`check` → `crawl` → `usage` → `reindex`(0 missing) → `restore`(원본과 SHA-256 일치) → 재크롤링(중복 0) 모두 통과.
+자세한 수치는 DEVELOPMENT_PLAN.md의 **실제 R2 크롤링 검증 결과**. 테스트용 키 + `prefix = "verify-test/"`로 진행했고
+그 데이터(약 2.9 MB)는 버킷에 남아 있다 (테스트 키는 세션과 함께 사라졌으므로 열 수 없음, 지워도 됨).
 
 ### 3-2. 뷰어 배포 (사용자 작업 + 승인 필요)
 

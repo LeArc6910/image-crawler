@@ -167,6 +167,11 @@ def _format_stats(s: CrawlStats) -> str:
 _UNSAFE = re.compile(r"[^\w.\-]+")
 
 
+def _format_bytes(value: float) -> str:
+    """GB with two decimals, or MB below 1 GB so a small vault doesn't read as "0.00 GB"."""
+    return f"{value / GB:.2f} GB" if value >= GB else f"{value / 1_000_000:.1f} MB"
+
+
 def _safe_part(value: str, fallback: str) -> str:
     value = _UNSAFE.sub("_", value).strip("._")
     return value[:120] or fallback
@@ -281,7 +286,7 @@ def cmd_usage(args, cfg) -> int:
     print(f"R2 usage {report.period_start} ~ {report.period_end} (UTC), {storage.describe()}")
     print(f"  {'':8}{'this machine':>14}{'cloudflare':>14}{'limit':>14}{'used':>7}{'free tier':>14}")
     for label, attr, fmt in (
-        ("storage", "storage_bytes", lambda v: f"{v / GB:.2f} GB"),
+        ("storage", "storage_bytes", _format_bytes),
         ("Class A", "class_a", "{:,}".format),
         ("Class B", "class_b", "{:,}".format),
     ):
