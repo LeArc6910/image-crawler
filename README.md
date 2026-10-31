@@ -32,13 +32,36 @@ image-crawler restore --out ./restored --from-dir ./downloaded-blobs   # 웹 UI 
 image-crawler remove https://another.example/photos
 image-crawler reindex                        # 인덱스에 빠진 이미지(이전 버전 업로드분, 중단된 실행)의 썸네일·목록 보충
 image-crawler cors --origin https://you.github.io   # PWA 뷰어 주소에서 버킷을 읽도록 허용 (S3/R2)
+image-crawler usage                          # 이번 달 R2 사용량 / 한도
 ```
 
 주기적으로 돌리려면 cron 등에 등록하면 됩니다. 이미 받은 URL과 같은 내용의 이미지는 자동으로 건너뜁니다.
 
 ```cron
 0 */6 * * * cd /path/to/workdir && image-crawler crawl >> crawl.log 2>&1
+# 매일 아침 사용량 점검: 한도의 80% 이상이면 종료 코드 1 → 원하는 알림 명령 연결
+0 9 * * *   cd /path/to/workdir && image-crawler usage --check || <알림 명령>
 ```
+
+## R2 무료 한도 보호
+
+Cloudflare는 R2에 사용 상한(하드 캡)을 제공하지 않습니다(예산 알림은 이메일만 보냄). 그래서 이 도구가
+**모든 저장소 요청을 보내기 전에 직접 세고**, 설정한 한도에 닿으면 멈춥니다(`[quota]`, s3 백엔드에 적용).
+
+| 항목 | 무료 한도/월 | 기본 한도 | 세는 요청 |
+|---|---|---|---|
+| 저장 용량 | 10 GB-month | 9 GB | 업로드한 바이트 |
+| Class A | 100만 | 90만 | 업로드, 목록 조회(1,000개당 1회) |
+| Class B | 1,000만 | 900만 | 다운로드, 존재 확인 |
+
+- 원본은 설정 한도(9 GB)에서 멈추고, 이미 올라간 원본의 썸네일·목록은 무료 한도(10 GB)까지 마저 올려 짝을 맞춥니다.
+- 한 번 실행에 올리는 원본 수에도 상한(`max_images_per_run`)이 있어, 오류로 폭주하는 것을 막습니다.
+- 한도에 닿으면 `stopped early: ...`를 출력하고 종료 코드 3으로 끝납니다. 이미 한도면 크롤링을 시작하지 않습니다.
+- `cloudflare_account_id` + `CLOUDFLARE_API_TOKEN`(Account Analytics 읽기 권한)을 설정하면 Cloudflare가 집계한
+  **계정 전체** 사용량(휴대폰 뷰어 사용분 포함)과 이 PC의 집계 중 큰 값을 기준으로 삼습니다.
+  설정하지 않으면 이 PC가 보낸 요청만 셉니다.
+- Cloudflare 집계는 실시간이 아니고 청구 기준치도 아니므로 한도에 여유를 두세요. 마지막 안전장치로
+  대시보드의 예산 알림(Manage Account → Billing → Billable Usage)도 켜 두기를 권장합니다.
 
 ## 수집 대상
 

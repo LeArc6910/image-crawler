@@ -40,3 +40,20 @@ region       = "auto"
 # e.g. "filen:image-vault", "mega:image-vault", "pcloud:image-vault"
 [storage.rclone]
 remote = "filen:image-vault"
+
+# ---------------------------------------------------------------------------
+# R2 free-tier guard (s3 backend). Cloudflare has no hard spending cap for R2,
+# so the crawler meters every request itself and stops before these limits.
+# Free tier per month: 10 GB-month storage, 1M Class A (writes/lists), 10M Class B (reads).
+# ---------------------------------------------------------------------------
+[quota]
+enabled            = true
+storage_limit_gb   = 9.0        # originals stop here; thumbnails/index may finish up to 10 GB
+class_a_limit      = 900000
+class_b_limit      = 9000000
+max_images_per_run = 2000       # guards against runaway runs
+warn_percent       = 80         # `image-crawler usage --check` exits 1 from here
+billing_day        = 1          # day of month your Cloudflare billing period starts
+# Optional but recommended: also read real account-wide usage (incl. the phone viewer)
+# from Cloudflare. Token: Account > Account Analytics > Read, in CLOUDFLARE_API_TOKEN.
+cloudflare_account_id = ""

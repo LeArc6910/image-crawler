@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 
 from image_crawler.archive import Archive
 from image_crawler.config import CrawlSettings
+from image_crawler.quota import QuotaExceeded
 from image_crawler.state import State
 
 log = logging.getLogger(__name__)
@@ -221,6 +222,7 @@ class Crawler:
         self.settings = settings
         self.archive = archive
         self.state = state
+        self.stop_reason: str | None = None  # set when a quota stops the run
         self.fetcher = fetcher or Fetcher(settings)
 
     def crawl_site(self, site_url: str) -> CrawlStats:
@@ -228,6 +230,9 @@ class Crawler:
         stats = CrawlStats()
         try:
             self._crawl(site_url, stats)
+        except QuotaExceeded as e:
+            self.stop_reason = str(e)
+            log.warning("stopping: %s", e)
         finally:
             try:
                 self.archive.flush()
@@ -338,6 +343,8 @@ class Crawler:
         }
         try:
             self.archive.store(data, metadata)
+        except QuotaExceeded:
+            raise
         except Exception as e:
             log.error("upload failed for %s: %s", url, e)
             stats.errors += 1

@@ -20,13 +20,33 @@ class CrawlSettings:
     respect_robots_txt: bool = True
     user_agent: str = "image-crawler/0.1"
 
-    @classmethod
-    def from_dict(cls, data: dict) -> "CrawlSettings":
-        known = {f.name for f in fields(cls)}
-        unknown = set(data) - known
-        if unknown:
-            raise ValueError(f"unknown [crawl] option(s): {', '.join(sorted(unknown))}")
-        return cls(**data)
+
+@dataclass
+class QuotaSettings:
+    """Stay inside the Cloudflare R2 free tier (10 GB-month, 1M Class A, 10M Class B per month).
+
+    Applies to the s3 backend. Limits are soft: kept below the free tier to leave
+    headroom for usage this machine can't see in real time (e.g. the phone viewer).
+    """
+
+    enabled: bool = True
+    storage_limit_gb: float = 9.0
+    class_a_limit: int = 900_000
+    class_b_limit: int = 9_000_000
+    max_images_per_run: int = 2_000
+    warn_percent: int = 80
+    billing_day: int = 1
+    # Optional: read real account-wide usage from Cloudflare. The API token (Account
+    # Analytics: Read) comes from the CLOUDFLARE_API_TOKEN environment variable.
+    cloudflare_account_id: str = ""
+
+
+def _section(cls, data: dict, name: str):
+    known = {f.name for f in fields(cls)}
+    unknown = set(data) - known
+    if unknown:
+        raise ValueError(f"unknown [{name}] option(s): {', '.join(sorted(unknown))}")
+    return cls(**data)
 
 
 @dataclass
@@ -36,6 +56,7 @@ class Config:
     key_file: Path
     crawl: CrawlSettings
     storage: dict = field(default_factory=dict)
+    quota: QuotaSettings = field(default_factory=QuotaSettings)
 
 
 def _resolve(base: Path, value: str) -> Path:
@@ -64,6 +85,7 @@ def load_config(path: str | Path | None = None) -> Config:
         sites_file=_resolve(base, data.get("sites_file", "sites.txt")),
         state_db=_resolve(base, data.get("state_db", "~/.image-crawler/state.db")),
         key_file=_resolve(base, data.get("key_file", "~/.image-crawler/key")),
-        crawl=CrawlSettings.from_dict(data.get("crawl", {})),
+        crawl=_section(CrawlSettings, data.get("crawl", {}), "crawl"),
         storage=storage,
+        quota=_section(QuotaSettings, data.get("quota", {}), "quota"),
     )
