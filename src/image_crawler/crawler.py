@@ -398,7 +398,9 @@ class Crawler:
                     stats.albums_finished += 1
                     self._maybe_checkpoint(stats)
 
-            if depth < max_depth:
+            # On a numbered-list site the list pages are the only way in: album pages also link to
+            # "related" albums anywhere on the site, and following those would leave the target pages.
+            if depth < max_depth and not (is_album and rule is not None and rule.list_pages):
                 for link in page.links:
                     if (
                         _host(link) == site_host

@@ -413,6 +413,18 @@ def test_to_page_collects_list_pages_in_order(site, tmp_path, key_file, capsys):
     assert [h for h in site.hits if h.startswith("/album/")] == ["/album/4", "/album/3"]
 
 
+def test_related_album_links_on_album_pages_are_not_followed(site, tmp_path, key_file, capsys):
+    numbered_site(site, [8, 7, 6, 5, 4, 3, 2, 1])
+    # Album pages link to "related" albums elsewhere on the site, and to the list pages.
+    site.page("/album/8", '<h1>A8</h1><img class="photo" src="/img/p8.png">'
+              '<a href="/album/2">2</a><a href="/album/1">1</a><a href="/list/4">4</a>')
+    config = numbered_config(tmp_path, key_file)
+    assert main(["-c", str(config), "crawl", "--site", site.url + "/list/1", "--to-page", "2"]) == 0
+    assert done_albums(tmp_path) == [5, 6, 7, 8]
+    assert not {"/album/1", "/album/2", "/list/4"} & set(site.hits)
+    assert "target page 2: done" in capsys.readouterr().out
+
+
 def test_resume_after_new_albums_pushed_pages_back(site, tmp_path, key_file, capsys):
     numbered_site(site, [8, 7, 6, 5, 4, 3, 2, 1])
     config = numbered_config(tmp_path, key_file)
