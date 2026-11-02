@@ -348,3 +348,120 @@ max_depth = 50
     assert main(["-c", str(config), "rules", "--clear"]) == 0
     assert main(["-c", str(config), "rules"]) == 0
     assert "no stored rules" in capsys.readouterr().out.splitlines()[-1]
+
+
+def numbered_site(site, album_ids, per_page=2):
+    """List pages /list/N (newest albums first, `per_page` each, links to first/next/last page)
+    and one-photo album pages /album/ID. Call again with more ids to add albums on top."""
+    pages = [album_ids[i:i + per_page] for i in range(0, len(album_ids), per_page)]
+    for n, ids in enumerate(pages, 1):
+        nav = {1, n + 1, len(pages)} - {n}
+        site.page(f"/list/{n}", "".join(f'<a href="/album/{i}">{i}</a>' for i in ids)
+                  + "".join(f'<a href="/list/{m}">{m}</a>' for m in sorted(nav) if m <= len(pages)))
+    for i in album_ids:
+        if f"/img/p{i}.png" not in site.routes:
+            site.image(f"/img/p{i}.png", make_png(2000 + i))
+        site.page(f"/album/{i}", f'<h1>A{i}</h1><img class="photo" src="/img/p{i}.png">')
+
+
+def numbered_config(tmp_path, key_file):
+    config = tmp_path / "config.toml"
+    config.write_text(f'''
+key_file = "{key_file}"
+state_db = "state.db"
+[crawl]
+delay_seconds = 0
+min_image_bytes = 100
+[[crawl.rules]]
+host = "127.0.0.1"
+follow = ['^/list/\\d+$', '^/album/\\d+$']
+list_pages = '^/list/(\\d+)$'
+album_pages = '^/album/\\d+$'
+album_images = "img.photo"
+other_images = false
+max_depth = 1000
+[storage.local]
+path = "vault"
+''')
+    return config
+
+
+def done_albums(tmp_path):
+    state = State(tmp_path / "state.db")
+    try:
+        return sorted(int(u.rsplit("/", 1)[1]) for (u,) in state.db.execute("SELECT url FROM albums"))
+    finally:
+        state.close()
+
+
+def test_to_page_collects_list_pages_in_order(site, tmp_path, key_file, capsys):
+    numbered_site(site, [8, 7, 6, 5, 4, 3, 2, 1])
+    config = numbered_config(tmp_path, key_file)
+    assert main(["-c", str(config), "crawl", "--site", site.url + "/list/1", "--to-page", "2"]) == 0
+    out = capsys.readouterr().out
+    assert done_albums(tmp_path) == [5, 6, 7, 8]
+    assert "/list/3" not in site.hits and "/list/4" not in site.hits  # page 1 links to the last page too
+    pages = [h for h in site.hits if h.startswith(("/list/", "/album/"))]
+    # The target page is read once up front (to note its last album), then in order.
+    assert pages == ["/list/1", "/list/2", "/album/8", "/album/7", "/list/2", "/album/6", "/album/5"]
+    assert "target page 2: done; list pages 1-2 complete" in out
+
+    # Going further later: only the new pages' albums are fetched.
+    site.hits.clear()
+    assert main(["-c", str(config), "crawl", "--site", site.url + "/list/1", "--to-page", "3"]) == 0
+    assert done_albums(tmp_path) == [3, 4, 5, 6, 7, 8]
+    assert [h for h in site.hits if h.startswith("/album/")] == ["/album/4", "/album/3"]
+
+
+def test_resume_after_new_albums_pushed_pages_back(site, tmp_path, key_file, capsys):
+    numbered_site(site, [8, 7, 6, 5, 4, 3, 2, 1])
+    config = numbered_config(tmp_path, key_file)
+    # Stops after 3 albums (as if the run had been cut short): target page 3 = albums 8..3.
+    assert main(["-c", str(config), "crawl", "--site", site.url + "/list/1", "--to-page", "3", "--albums", "3"]) == 0
+    assert done_albums(tmp_path) == [6, 7, 8]
+    assert main(["-c", str(config), "progress"]) == 0
+    assert "not finished yet" in capsys.readouterr().out
+
+    # Two new albums arrive on top: album 3 (the end of the target) moves from page 3 to page 4.
+    numbered_site(site, [10, 9, 8, 7, 6, 5, 4, 3, 2, 1])
+    site.hits.clear()
+    assert main(["-c", str(config), "crawl", "--site", site.url + "/list/1", "--resume"]) == 0
+    out = capsys.readouterr().out
+    assert done_albums(tmp_path) == [3, 4, 5, 6, 7, 8, 9, 10]  # nothing between skipped, 2 and 1 not taken
+    assert "/list/5" not in site.hits
+    assert not {"/album/6", "/album/7", "/album/8"} & set(site.hits)  # finished ones aren't refetched
+    assert "target page 3: done" in out and "pushed the target's last album to page 4" in out
+
+    # Resuming a finished target only rereads the list pages.
+    site.hits.clear()
+    assert main(["-c", str(config), "crawl", "--site", site.url + "/list/1", "--resume"]) == 0
+    assert not [h for h in site.hits if h.startswith("/album/")]
+
+
+def test_resume_without_a_target(site, tmp_path, key_file, capsys):
+    numbered_site(site, [2, 1])
+    config = numbered_config(tmp_path, key_file)
+    assert main(["-c", str(config), "crawl", "--site", site.url + "/list/1", "--resume"]) == 0
+    assert "nothing to resume" in capsys.readouterr().out
+    assert done_albums(tmp_path) == []
+
+
+def test_long_runs_save_progress_midway(site, tmp_path, key_file, monkeypatch):
+    numbered_site(site, [6, 5, 4, 3, 2, 1])
+    monkeypatch.setattr("image_crawler.crawler.CHECKPOINT_ALBUMS", 2)
+    crawler, archive = make_crawler(tmp_path, key_file, rules=[album_rule(
+        follow=[r"^/list/\d+$", r"^/album/\d+$"], list_pages=r"^/list/(\d+)$")])
+    saved = []
+    crawler.checkpoint = lambda: saved.append((crawler.state.album_count(), len(archive.read_index())))
+    crawler.crawl_site(site.url + "/list/1")
+    # Every 2 albums; the index is flushed first, so it already lists what the state calls done.
+    assert saved == [(2, 2), (4, 4), (6, 6)]
+
+
+def test_target_past_the_last_page_takes_everything(site, tmp_path, key_file, capsys):
+    numbered_site(site, [4, 3, 2, 1])
+    site.page("/list/9", "<p>no albums here</p>")
+    config = numbered_config(tmp_path, key_file)
+    assert main(["-c", str(config), "crawl", "--site", site.url + "/list/1", "--to-page", "9"]) == 0
+    assert done_albums(tmp_path) == [1, 2, 3, 4]
+    assert "target page 9: done" in capsys.readouterr().out

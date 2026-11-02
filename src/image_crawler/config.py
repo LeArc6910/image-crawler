@@ -20,6 +20,10 @@ class SiteRule:
     host: str                    # sites on this host (a leading "www." is ignored)
     follow: list[str] = field(default_factory=list)  # only follow matching links (empty = all on the host)
     album_pages: str = ""        # pages that are albums; an album finished once isn't fetched again
+    # Numbered list pages: a regex whose group 1 is the page number (e.g. '^/list/(\\d+)$').
+    # They are then read in page order (each page's albums before the next page), which is
+    # what `crawl --to-page N` / `--resume` count in.
+    list_pages: str = ""
     album_images: str = ""       # CSS selector for an album page's own images (empty = every image on it)
     # Album pages that show only the first photos and reveal the rest with a "More" button
     # usually carry the whole list in the page's data. album_list is a regex searched in the
@@ -40,7 +44,7 @@ class SiteRule:
             self.follow = [self.follow]
         if self.album_list and not self.album_item:
             raise ValueError(f"[[crawl.rules]] {self.host}: album_list needs album_item")
-        for pattern in [*self.follow, self.album_pages, self.album_list, self.album_item]:
+        for pattern in [*self.follow, self.album_pages, self.list_pages, self.album_list, self.album_item]:
             try:
                 re.compile(pattern)
             except re.error as e:
@@ -76,6 +80,33 @@ class SiteRule:
             item = (found.group(1) if found.re.groups else found.group(0)).replace("\\/", "/")
             urls.append(self.album_url.replace("{}", item) if self.album_url else urljoin(base_url, item))
         return list(dict.fromkeys(urls))
+
+    def list_page_number(self, url: str) -> int | None:
+        if not self.list_pages:
+            return None
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(url)
+        match = re.search(self.list_pages, parts.path + (f"?{parts.query}" if parts.query else ""))
+        if match is None:
+            return None
+        try:
+            return int(match.group(1))
+        except (IndexError, TypeError, ValueError):
+            return None
+
+    def list_page_url(self, url: str, number: int) -> str | None:
+        """The URL of list page `number`, made from another list page's URL."""
+        from urllib.parse import urlsplit, urlunsplit
+
+        parts = urlsplit(url)
+        target = parts.path + (f"?{parts.query}" if parts.query else "")
+        match = re.search(self.list_pages, target) if self.list_pages else None
+        if match is None or match.lastindex is None:
+            return None
+        start, end = match.span(1)
+        path, _, query = (target[:start] + str(number) + target[end:]).partition("?")
+        return urlunsplit((parts.scheme, parts.netloc, path, query, ""))
 
     def is_album(self, url: str) -> bool:
         return bool(self.album_pages) and self._matches(self.album_pages, url)

@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 import mimetypes
 import posixpath
+import heapq
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from urllib import robotparser
 from urllib.parse import unquote, urldefrag, urljoin, urlsplit
@@ -159,6 +160,45 @@ def extract_page(
     return Page(absolutize(raw_images), absolutize(raw_links), page_title(soup, title_selector))
 
 
+BOUNDARY_SLACK = 20  # list pages to look past the target for an album that new albums pushed back
+CHECKPOINT_ALBUMS = 20
+CHECKPOINT_SECONDS = 300
+
+
+@dataclass
+class ListingPlan:
+    """Where a numbered-list crawl stops (see SiteRule.list_pages).
+
+    `to_page` is the requested last list page. `boundary` is the last album that page showed
+    when it was first read: albums added later push it to a later page, so a run that
+    continues the same target goes on until the page where the boundary album is now.
+    """
+
+    to_page: int | None = None
+    boundary: str | None = None
+    max_albums: int | None = None  # stop after finishing this many albums in this run
+    # Filled in while crawling:
+    boundary_page: int | None = None  # where the boundary album was found this run
+    page_albums: dict[int, list[str]] = field(default_factory=dict)  # list page -> its albums
+
+    def allows(self, number: int) -> bool:
+        if self.to_page is None:
+            return True
+        if self.boundary:
+            if self.boundary_page is not None:
+                return number <= self.boundary_page
+            return number <= self.to_page + BOUNDARY_SLACK
+        return number <= self.to_page
+
+    def saw_list_page(self, number: int, albums: list[str]) -> None:
+        self.page_albums[number] = albums
+        if self.boundary and self.boundary in albums and self.boundary_page is None:
+            self.boundary_page = number
+        elif not self.boundary and number == self.to_page and albums:
+            self.boundary = albums[-1]
+            self.boundary_page = number
+
+
 @dataclass
 class CrawlStats:
     pages: int = 0
@@ -261,6 +301,9 @@ class Crawler:
         self.state = state
         self.stop_reason: str | None = None  # set when a quota stops the run
         self.redo_albums = False  # open finished albums again (e.g. after a rule now finds more photos)
+        self.plan = ListingPlan()  # numbered-list limits for the next crawl_site()
+        self.checkpoint = None  # called now and then during long runs (saves the crawl state)
+        self._last_checkpoint = time.monotonic()
         self.fetcher = fetcher or Fetcher(settings)
 
     def crawl_site(self, site_url: str) -> CrawlStats:
@@ -282,12 +325,30 @@ class Crawler:
     def _crawl(self, site_url: str, stats: CrawlStats) -> None:
         site_host = _host(site_url)
         rule = self.settings.rule_for(site_url)
+        plan = self.plan
         max_depth = rule.max_depth if rule and rule.max_depth is not None else self.settings.max_depth
         queue: deque[tuple[str, int]] = deque([(site_url, 0)])
+        # Numbered list pages wait here and are read in page order, each one only after the
+        # albums of the pages before it.
+        list_queue: list[tuple[int, str, int]] = []
         visited: set[str] = set()
 
-        while queue and stats.pages < self.settings.max_pages_per_site:
-            page_url, depth = queue.popleft()
+        def next_page() -> tuple[str, int] | None:
+            if queue:
+                return queue.popleft()
+            while list_queue:
+                number, url, depth = heapq.heappop(list_queue)
+                if plan.allows(number):
+                    return url, depth
+            return None
+
+        while stats.pages < self.settings.max_pages_per_site:
+            if plan.max_albums is not None and stats.albums_finished >= plan.max_albums:
+                break
+            item = next_page()
+            if item is None:
+                break
+            page_url, depth = item
             if page_url in visited:
                 continue
             visited.add(page_url)
@@ -320,6 +381,10 @@ class Crawler:
                 else:
                     log.warning("album list not found on %s; using the images shown on the page", page_url)
             log.info("page %s: %d image(s), %d link(s)", page_url, len(page.images), len(page.links))
+            if rule and (number := rule.list_page_number(page_url)) is not None:
+                plan.saw_list_page(number, self._albums_on(page.links, rule))
+                if plan.to_page is not None and not plan.boundary and number != plan.to_page:
+                    self._read_target_page(rule, page_url, plan)
 
             if is_album or rule is None or rule.other_images:
                 errors_before = stats.errors
@@ -331,6 +396,7 @@ class Crawler:
                 if is_album and stats.errors == errors_before:
                     self.state.finish_album(page_url, page.title, len(page.images))
                     stats.albums_finished += 1
+                    self._maybe_checkpoint(stats)
 
             if depth < max_depth:
                 for link in page.links:
@@ -340,7 +406,48 @@ class Crawler:
                         and _extension(link) not in NON_PAGE_EXTENSIONS
                         and (rule is None or rule.follows(link))
                     ):
-                        queue.append((link, depth + 1))
+                        number = rule.list_page_number(link) if rule else None
+                        if number is not None:
+                            heapq.heappush(list_queue, (number, link, depth + 1))
+                        else:
+                            queue.append((link, depth + 1))
+
+    @staticmethod
+    def _albums_on(links: list[str], rule) -> list[str]:
+        return list(dict.fromkeys(link for link in links if rule.is_album(link)))
+
+    def _read_target_page(self, rule, list_url: str, plan: ListingPlan) -> None:
+        """Note which album ends a new target right away, so a run cut short before reaching
+        that page can still be resumed to the same place after newer albums push it back."""
+        url = rule.list_page_url(list_url, plan.to_page)
+        if url is None or not self.fetcher.allowed(url):
+            return
+        try:
+            resp = self.fetcher.get(url)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            log.warning("could not read target list page %s: %s", url, e)
+            return
+        albums = self._albums_on(extract_page(resp.text, resp.url).links, rule)
+        if albums:
+            plan.boundary, plan.boundary_page = albums[-1], plan.to_page
+        # else: past the last page, so the target is simply every page there is
+
+    def _maybe_checkpoint(self, stats: CrawlStats) -> None:
+        """Save progress now and then, so a long run that dies loses little."""
+        if self.checkpoint is None:
+            return
+        due = time.monotonic() - self._last_checkpoint >= CHECKPOINT_SECONDS
+        if stats.albums_finished % CHECKPOINT_ALBUMS and not due:
+            return
+        self._last_checkpoint = time.monotonic()
+        try:
+            self.archive.flush()  # index entries before the state that says they're done
+            self.checkpoint()
+        except QuotaExceeded:
+            raise
+        except Exception as e:
+            log.warning("checkpoint failed (will retry later): %s", e)
 
     def _regroup(self, url: str, page_url: str, site_url: str, rule, album: str, position: int) -> bool:
         """File an image stored earlier from a non-album page (e.g. a list page's cover) under

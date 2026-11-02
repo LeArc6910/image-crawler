@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import logging
 import os
 import re
@@ -15,7 +16,7 @@ from urllib.parse import urlsplit
 from image_crawler import layout
 from image_crawler.archive import AUTO_COMPACT_SEGMENTS, Archive
 from image_crawler.config import load_config, parse_rules
-from image_crawler.crawler import Crawler, CrawlStats
+from image_crawler.crawler import Crawler, CrawlStats, ListingPlan
 from image_crawler.crypto import KIND_IMAGE, DecryptionError, Vault, generate_key_file
 from image_crawler.doctor import explain, run_checks
 from image_crawler.quota import (
@@ -128,7 +129,7 @@ def _open_storage(cfg, state: State) -> Storage:
 
 
 @contextmanager
-def _session(cfg, *, storage: bool = True):
+def _session(cfg, *, storage: bool = True, checkpoint: list | None = None):
     """Open the crawl state and (optionally) the quota-guarded storage for one command.
 
     With state_sync, the state is first pulled from the storage and, when the command is
@@ -145,6 +146,8 @@ def _session(cfg, *, storage: bool = True):
         opened = _open_storage(cfg, state) if storage else None
         if sync:
             sync.begin(state)
+            if checkpoint is not None:  # lets a long command save the state midway
+                checkpoint.append(lambda: _push_state(cfg, sync, state, opened))
         try:
             yield state, opened
         finally:
@@ -187,13 +190,88 @@ def _warn_if_near(cfg, usage: Usage) -> None:
             print(f"warning: R2 {name} at {pct:.0f}% of the configured limit", file=sys.stderr)
 
 
+PROGRESS_META = "progress:"  # + site URL: JSON of the last numbered-list crawl
+
+
+def _load_progress(state: State, site: str) -> dict:
+    text = state.get_meta(PROGRESS_META + site)
+    return json.loads(text) if text else {}
+
+
+def _plan_for(args, state: State, site: str) -> ListingPlan | None:
+    """The numbered-list limits for this site, or None if the arguments don't apply."""
+    progress = _load_progress(state, site)
+    to_page = args.to_page
+    if args.resume:
+        to_page = progress.get("target_page")
+        if to_page is None:
+            print(f"{site}: nothing to resume (no earlier --to-page run)")
+            return None
+    # The same target as before continues from where it stopped: its boundary album says
+    # how far that target reaches now that newer albums may have pushed it back.
+    boundary = progress.get("boundary") if progress.get("target_page") == to_page else None
+    return ListingPlan(to_page=to_page, boundary=boundary, max_albums=args.albums)
+
+
+def _save_progress(state: State, site: str, plan: ListingPlan, stats: CrawlStats) -> dict:
+    complete_through = 0
+    for number in sorted(plan.page_albums):
+        if number != complete_through + 1 or not all(state.album_done(a) for a in plan.page_albums[number]):
+            break
+        complete_through = number
+    previous = _load_progress(state, site)
+    progress = {
+        "target_page": plan.to_page,
+        "boundary": plan.boundary,
+        "boundary_page": plan.boundary_page or (plan.to_page if plan.boundary else None),
+        "target_done": (
+            state.album_done(plan.boundary) and complete_through >= (plan.boundary_page or plan.to_page)
+            if plan.boundary  # else the target lies past the last page: done when all pages are
+            else bool(plan.page_albums) and complete_through == max(plan.page_albums) < plan.to_page
+        ),
+        "complete_through": complete_through,
+        "albums_this_run": stats.albums_finished,
+        "runs": previous.get("runs", 0) + 1 if previous.get("target_page") == plan.to_page else 1,
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    state.set_meta(PROGRESS_META + site, json.dumps(progress))
+    return progress
+
+
+def _describe_progress(p: dict) -> str:
+    text = f"target page {p['target_page']}: " + ("done" if p.get("target_done") else "not finished yet")
+    if p.get("complete_through"):
+        text += f"; list pages 1-{p['complete_through']} complete"
+    if p.get("boundary_page") and p["boundary_page"] != p["target_page"]:
+        text += f" (newer albums pushed the target's last album to page {p['boundary_page']})"
+    return text + f"; last run {p.get('updated_at', '?')}"
+
+
+def cmd_progress(args, cfg) -> int:
+    with _session(cfg, storage=False) as (state, _):
+        sites = read_sites(cfg.sites_file)
+        shown = 0
+        for site in sites:
+            if progress := _load_progress(state, site):
+                print(f"{site}: {_describe_progress(progress)}")
+                shown += 1
+        print(f"albums finished in total: {state.album_count()}")
+        if not shown:
+            print("no numbered-list crawl yet (use `crawl --to-page N`)")
+    return 0
+
+
 def cmd_crawl(args, cfg) -> int:
     if args.max_depth is not None:
         cfg.crawl.max_depth = args.max_depth
+    listing = args.to_page is not None or args.resume or args.albums is not None
     if args.max_pages is not None:
         cfg.crawl.max_pages_per_site = args.max_pages
+    elif listing:
+        cfg.crawl.max_pages_per_site = 10**9  # the list target or album count is the limit
 
-    with _session(cfg) as (state, storage):
+    checkpoint: list = []
+    with _session(cfg, checkpoint=checkpoint) as (state, storage):
         # Read after the session opens: with state_sync the site list comes from the storage.
         sites = args.site or read_sites(cfg.sites_file)
         if not sites:
@@ -208,13 +286,26 @@ def cmd_crawl(args, cfg) -> int:
                 return EXIT_QUOTA
         crawler = Crawler(cfg.crawl, archive, state)
         crawler.redo_albums = args.redo_albums
+        crawler.checkpoint = checkpoint[0] if checkpoint else None
         log.info("storing to %s", storage.describe())
 
         total = CrawlStats()
         for site in sites:
+            plan = None
+            if listing:
+                rule = cfg.crawl.rule_for(site)
+                if rule is None or not rule.list_pages:
+                    print(f"{site}: --to-page/--resume/--albums need a rule with list_pages; skipped")
+                    continue
+                plan = _plan_for(args, state, site)
+                if plan is None:
+                    continue
+            crawler.plan = plan or ListingPlan()
             log.info("crawling %s", site)
             stats = crawler.crawl_site(site)
             print(f"{site}: {_format_stats(stats)}")
+            if plan is not None and plan.to_page is not None:
+                print(f"  {_describe_progress(_save_progress(state, site, plan, stats))}")
             total += stats
             if crawler.stop_reason:
                 print(f"stopped early: {crawler.stop_reason}")
@@ -531,6 +622,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("sites", help="list registered sites")
     p.set_defaults(func=cmd_sites)
 
+    p = sub.add_parser("progress", help="show how far numbered-list crawls (--to-page) got")
+    p.set_defaults(func=cmd_progress)
+
     p = sub.add_parser("rules", help="show or store per-site crawl rules (kept in the crawl state)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--set", metavar="FILE", help="store the [[crawl.rules]] tables in this TOML file")
@@ -541,6 +635,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--site", action="append", help="crawl only this URL (repeatable)")
     p.add_argument("--max-depth", type=int, help="override crawl.max_depth")
     p.add_argument("--max-pages", type=int, help="override crawl.max_pages_per_site")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--to-page", type=int, metavar="N",
+                   help="numbered list sites: collect albums up to list page N (remembered for --resume)")
+    g.add_argument("--resume", action="store_true",
+                   help="continue the last --to-page target where it stopped (pages may have shifted)")
+    p.add_argument("--albums", type=int, metavar="N", help="stop after finishing N albums in this run")
     p.add_argument("--redo-albums", action="store_true",
                    help="open albums finished in earlier runs again (only photos not seen yet are downloaded)")
     p.set_defaults(func=cmd_crawl)
