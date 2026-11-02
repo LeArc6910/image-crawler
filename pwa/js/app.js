@@ -5,9 +5,12 @@ import * as db from "./db.js";
 import { BundleError, looksLikeBundle, openBundle } from "./keystore.js";
 import { BudgetExceeded, RequestBudget, S3Client, S3Error } from "./s3.js";
 import { scanQr } from "./scanner.js";
-import { INDEX_PREFIX, KIND_IMAGE, KIND_THUMB, imageKey, openBlob, readIndex, thumbKey } from "./vault.js";
+import {
+  INDEX_PREFIX, KIND_IMAGE, KIND_STATUS, KIND_THUMB, STATUS_KEY, imageKey, openBlob, readIndex, thumbKey,
+} from "./vault.js";
 
 const $ = (id) => document.getElementById(id);
+const utf8 = new TextDecoder();
 const IDLE_LOCK_MS = 10 * 60 * 1000;
 const HIDDEN_LOCK_MS = 60 * 1000;
 const THUMB_CONCURRENCY = 6;
@@ -77,6 +80,7 @@ function lock() {
   scrollFor.clear();
   $("viewer").close();
   $("grid").replaceChildren();
+  $("usage").hidden = true;
   for (const url of objectUrls) URL.revokeObjectURL(url);
   objectUrls.clear();
   $("lock-passphrase").value = "";
@@ -196,6 +200,63 @@ async function loadGallery() {
   if (view.folder !== null && !byKey.has(view.folder)) view.folder = null;
   status.textContent = entries.length ? "" : "아직 저장된 이미지가 없습니다.";
   render();
+  await showUsage(s3, key);
+}
+
+// --- storage usage -------------------------------------------------------------
+
+const GBYTE = 1e9;
+const formatSize = (n) => n >= GBYTE ? `${(n / GBYTE).toFixed(2)} GB` : `${(n / 1e6).toFixed(1)} MB`;
+
+/** The crawler leaves a sealed summary of R2 usage after each run; listing the bucket here
+ * instead would cost hundreds of requests per refresh. */
+async function readStatus(s3, key) {
+  try {
+    const blob = await s3.get(STATUS_KEY);
+    const { content } = await openBlob(key, blob, { kind: KIND_STATUS, name: "status" });
+    return JSON.parse(utf8.decode(content));
+  } catch (err) {
+    if (err instanceof S3Error && err.status === 404) return null; // no crawl since this was added
+    throw err;
+  }
+}
+
+async function showUsage(s3, key) {
+  const bar = $("usage");
+  let status = null;
+  try {
+    status = await readStatus(s3, key);
+  } catch (err) {
+    if (err instanceof BudgetExceeded) return;
+    bar.hidden = false;
+    $("usage-text").textContent = `저장소 사용량을 불러오지 못했습니다: ${describeError(err)}`;
+    $("usage-meter").hidden = true;
+    return;
+  }
+  if (session?.key !== key) return;
+  const usage = status?.usage;
+  bar.hidden = false;
+  if (!usage) {
+    const total = entries.reduce((sum, e) => sum + (e.size || 0), 0);
+    $("usage-text").textContent = `사진 원본 합계 ${formatSize(total)} · 저장소 사용량은 다음 수집 후 표시됩니다`;
+    $("usage-meter").hidden = true;
+    $("usage-detail").textContent = "";
+    return;
+  }
+  const free = status.free_tier?.storage_bytes || 10 * GBYTE;
+  const pct = (100 * usage.storage_bytes) / free;
+  $("usage-text").textContent = `저장소 ${formatSize(usage.storage_bytes)} / 무료 ${formatSize(free)} (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)`;
+  const meter = $("usage-meter");
+  meter.hidden = false;
+  meter.max = free;
+  meter.value = Math.min(usage.storage_bytes, free);
+  if (status.limits?.storage_bytes) meter.high = status.limits.storage_bytes;
+  const when = new Date(status.updated_at).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const ops = (used, limit) => `${Math.round((100 * used) / limit)}%`;
+  $("usage-detail").textContent = [
+    `${when} 기준`,
+    status.free_tier ? `이번 달 요청 쓰기 ${ops(usage.class_a, status.free_tier.class_a)} · 읽기 ${ops(usage.class_b, status.free_tier.class_b)}` : null,
+  ].filter(Boolean).join(" · ");
 }
 
 function render() {

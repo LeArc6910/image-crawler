@@ -42,6 +42,12 @@ try {
   result.folders = await page.$$eval(".folder", (f) => f.map((x) => [x.querySelector(".name").textContent, x.querySelector(".n").textContent]));
   result.coversLoaded = await page.$$eval(".folder img", (imgs) => imgs.filter((i) => i.complete && i.naturalWidth > 0).length);
   result.folderCount = await page.textContent("#count");
+  await page.waitForSelector("#usage:not([hidden])");
+  result.usage = {
+    text: await page.textContent("#usage-text"),
+    value: await page.$eval("#usage-meter", (m) => m.value),
+    detail: (await page.textContent("#usage-detail")).replace(/^.*기준 · /, ""),
+  };
   await page.screenshot({ path: `${shots}/2-folders.png` });
   await page.selectOption("#site-filter", { index: 2 });
   result.sitesFolders = await page.textContent("#count");

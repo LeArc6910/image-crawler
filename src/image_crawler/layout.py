@@ -4,6 +4,7 @@
     thumbs/cd/<thumb>.bin    encrypted thumbnail
     index/<segment>.bin      encrypted index segment (append-only list of images)
     state/crawl-state.bin    encrypted crawl history + site list (only with state_sync)
+    status/status.bin        encrypted usage + crawl progress summary for the phone viewer
 
 pwa/js/vault.js mirrors these paths; keep them in sync.
 """
@@ -16,6 +17,7 @@ SUFFIX = ".bin"
 THUMBS = "thumbs/"
 INDEX = "index/"
 STATE_KEY = "state/crawl-state.bin"
+STATUS_KEY = "status/status.bin"
 
 _IMAGE_KEY = re.compile(r"^[0-9a-f]{2}/([0-9a-f]{64})\.bin$")
 _INDEX_KEY = re.compile(r"^index/([0-9A-Za-z_-]+)\.bin$")

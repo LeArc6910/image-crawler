@@ -46,6 +46,7 @@ KIND_IMAGE = "image"
 KIND_THUMB = "thumb"
 KIND_INDEX = "index"
 KIND_STATE = "state"
+KIND_STATUS = "status"
 
 # Where a machine without a key file (e.g. a cloud runner) takes the master key from:
 # the same single base64 line that `image-crawler keygen` writes to the key file.

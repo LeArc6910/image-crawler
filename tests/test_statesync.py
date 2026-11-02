@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import boto3
 import pytest
 from moto import mock_aws
@@ -190,3 +191,29 @@ def test_quota_meter_survives_fresh_machines(tmp_path, env_key, site, capsys, mo
     assert " 0.0 MB" not in capsys.readouterr().out
     # Exact, including the backup blob itself (recorded before the snapshot is taken).
     assert State(tmp_path / "run3" / "state.db").stored_bytes("s3://vault/") == stored
+
+
+@mock_aws
+def test_crawl_leaves_a_sealed_status_for_the_viewer(tmp_path, env_key, site, capsys, monkeypatch):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    client = boto3.client("s3", region_name="us-east-1")
+    client.create_bucket(Bucket="vault")
+    site.page("/", '<img src="/0.jpg">')
+    site.image("/0.jpg", make_photo(200, 200), ctype="image/jpeg")
+    s3 = '[storage]\nbackend = "s3"\n[storage.s3]\nbucket = "vault"\nregion = "us-east-1"\n'
+    config = machine(tmp_path, "pc", s3)
+    assert main(["-c", config, "crawl", "--site", site.url + "/"]) == 0
+
+    blob = client.get_object(Bucket="vault", Key="status/status.bin")["Body"].read()
+    assert b"storage_bytes" not in blob  # sealed
+    status = json.loads(Vault.load(tmp_path / "unused").open(blob, kind="status", name="status").content)
+    stored = State(tmp_path / "pc" / "state.db").stored_bytes("s3://vault/")
+    assert 0 < status["usage"]["storage_bytes"] <= stored
+    assert status["usage"]["class_a"] >= 3  # image, thumbnail, index
+    assert status["free_tier"]["storage_bytes"] == 10 * 1000**3
+
+    capsys.readouterr()
+    assert main(["-c", config, "status"]) == 0
+    assert "status updated: storage" in capsys.readouterr().out

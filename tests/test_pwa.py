@@ -133,6 +133,14 @@ def test_pwa_end_to_end(r2_like, static_server, tmp_path, key_file):
         "fetched_at": "2026-10-01T09:00:00+00:00",
     })
     archive.flush()
+    # What the crawler leaves for the viewer after a run (cli._publish_status).
+    status = {"v": 1, "updated_at": "2026-11-02T09:00:00+00:00",
+              "usage": {"period_start": "2026-11-01", "period_end": "2026-12-01",
+                        "storage_bytes": 2_100_000_000, "class_a": 120_000, "class_b": 450_000},
+              "limits": {"storage_bytes": 9_000_000_000, "class_a": 900_000, "class_b": 9_000_000},
+              "free_tier": {"storage_bytes": 10_000_000_000, "class_a": 1_000_000, "class_b": 10_000_000}}
+    storage.put("status/status.bin", archive.vault.seal(json.dumps(status).encode(), {"v": 1},
+                                                        kind="status", name="status", pad_block=4096))
 
     vault = Vault.from_key_file(key_file)
     text = seal_bundle(make_bundle(endpoint=r2_endpoint, region="us-east-1", bucket="vault", prefix="",
@@ -163,8 +171,12 @@ def test_pwa_end_to_end(r2_like, static_server, tmp_path, key_file):
     assert r["filteredCount"] == "7장"
     assert r["afterLock"] == {"lockVisible": True, "tiles": 0}
     assert r["afterReload"] == "lock" and r["reunlockedTiles"] == 10
-    # Reopening only lists the index; segments and thumbnails come from the encrypted cache.
-    assert len(r["requestsOnReopen"]) == 1 and "list-type=2" in r["requestsOnReopen"][0], r["requestsOnReopen"]
+    assert r["usage"] == {"text": "저장소 2.10 GB / 무료 10.00 GB (21%)", "value": 2_100_000_000,
+                          "detail": "이번 달 요청 쓰기 12% · 읽기 5%"}
+    # Reopening lists the index and reads the usage summary; segments and thumbnails come from
+    # the encrypted cache.
+    assert len(r["requestsOnReopen"]) == 2 and "list-type=2" in r["requestsOnReopen"][0], r["requestsOnReopen"]
+    assert r["requestsOnReopen"][1].endswith("/status/status.bin")
     assert r["storedBundleIsSealed"] is True
     assert r["serviceWorker"] is True
     assert r["errors"] == []

@@ -17,7 +17,14 @@ from image_crawler import layout
 from image_crawler.archive import AUTO_COMPACT_SEGMENTS, Archive
 from image_crawler.config import load_config, parse_rules
 from image_crawler.crawler import Crawler, CrawlStats, ListingPlan
-from image_crawler.crypto import KIND_IMAGE, DecryptionError, Vault, generate_key_file
+from image_crawler.crypto import (
+    KIND_IMAGE,
+    KIND_STATUS,
+    SMALL_PAD_BLOCK,
+    DecryptionError,
+    Vault,
+    generate_key_file,
+)
 from image_crawler.doctor import explain, run_checks
 from image_crawler.quota import (
     GB,
@@ -312,9 +319,56 @@ def cmd_crawl(args, cfg) -> int:
                 break
         if not crawler.stop_reason:
             _auto_compact(archive)
+        _publish_status(cfg, state, storage, archive.vault)
     if len(sites) > 1:
         print(f"total: {_format_stats(total)}")
     return EXIT_QUOTA if crawler.stop_reason else 0
+
+
+def _publish_status(cfg, state: State, storage: Storage, vault: Vault) -> dict | None:
+    """Upload a small sealed summary (R2 usage, crawl progress) for the phone viewer to show.
+
+    The viewer can't measure the bucket itself without listing every object, so the crawler
+    leaves this behind after each command that changes the storage. One Class A request.
+    """
+    status: dict = {"v": 1, "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    if isinstance(storage, GuardedStorage):
+        start, end = billing_period(datetime.now(timezone.utc).date(), cfg.quota.billing_day)
+        used, limits = storage.used, soft_limits(cfg.quota)
+        status["usage"] = {
+            "period_start": start.isoformat(), "period_end": end.isoformat(),
+            "storage_bytes": used.storage_bytes, "class_a": used.class_a, "class_b": used.class_b,
+        }
+        status["limits"] = {"storage_bytes": limits.storage_bytes, "class_a": limits.class_a,
+                            "class_b": limits.class_b}
+        status["free_tier"] = {"storage_bytes": FREE_TIER.storage_bytes, "class_a": FREE_TIER.class_a,
+                               "class_b": FREE_TIER.class_b}
+    status["albums"] = state.album_count()
+    status["progress"] = {site: p for site in read_sites(cfg.sites_file) if (p := _load_progress(state, site))}
+    try:
+        blob = vault.seal(json.dumps(status).encode(), {"v": 1}, kind=KIND_STATUS, name="status",
+                          pad_block=SMALL_PAD_BLOCK)
+        storage.put(layout.STATUS_KEY, blob)
+    except Exception as e:
+        log.warning("status for the phone viewer not updated: %s", e)
+        return None
+    return status
+
+
+def cmd_status(args, cfg) -> int:
+    """Refresh the summary the phone viewer shows (usage, progress) without crawling."""
+    with _session(cfg) as (state, storage):
+        status = _publish_status(cfg, state, storage, Vault.load(cfg.key_file))
+    if status is None:
+        print("status not updated (see the warning above)")
+        return 1
+    usage = status.get("usage")
+    if usage:
+        print(f"status updated: storage {_format_bytes(usage['storage_bytes'])}, "
+              f"Class A {usage['class_a']:,}, Class B {usage['class_b']:,}")
+    else:
+        print("status updated (no R2 usage: quota tracking applies to the s3 backend)")
+    return 0
 
 
 def _auto_compact(archive: Archive) -> None:
@@ -621,6 +675,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("sites", help="list registered sites")
     p.set_defaults(func=cmd_sites)
+
+    p = sub.add_parser("status", help="refresh the usage/progress summary shown in the phone viewer")
+    p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("progress", help="show how far numbered-list crawls (--to-page) got")
     p.set_defaults(func=cmd_progress)

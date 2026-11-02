@@ -13,6 +13,7 @@ const HEADER_SIZE = 12;
 export const KIND_IMAGE = "image";
 export const KIND_THUMB = "thumb";
 export const KIND_INDEX = "index";
+export const KIND_STATUS = "status";
 
 const text = new TextEncoder();
 const utf8 = new TextDecoder();
@@ -74,6 +75,7 @@ export const INDEX_PREFIX = "index/";
 export const imageKey = (name) => `${name.slice(0, 2)}/${name}.bin`;
 export const thumbKey = (name) => `thumbs/${name.slice(0, 2)}/${name}.bin`;
 export const indexKey = (segment) => `${INDEX_PREFIX}${segment}.bin`;
+export const STATUS_KEY = "status/status.bin"; // usage + crawl progress, written by the crawler
 
 /** Segment id from an index key, or null if the key isn't an index segment. */
 export function indexSegmentId(key) {

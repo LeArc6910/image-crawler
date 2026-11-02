@@ -140,6 +140,13 @@
 - 사용자가 요청하면: `crawl --to-page N` (필요하면 `--albums`로 나눔). 장당 약 2.3초라 1쪽(25앨범 ≈ 1,150장) ≈ 45분.
   Bash 포그라운드 한도(10분)를 넘으므로 `run_in_background`로 돌리고, 끝나면 `progress`·`usage`를 보고한다
 
+### 3-2g. 뷰어 하단 저장소 사용량 (2026-11-02)
+
+- 크롤러가 `crawl` 끝에(그리고 `image-crawler status`로) 사용량·진행 상황을 봉인해 `status/status.bin`에 올림 (Class A 1회)
+- 뷰어는 새로고침마다 이 파일 1개를 GET해 하단에 "저장소 X / 무료 10 GB (N%)" + 막대 + 기준 시각·이번 달 요청 비율 표시.
+  파일이 없으면 목록의 원본 크기 합계를 대신 표시. 상태 파일에는 사이트별 `progress`도 들어 있다 → PWA 수집 메뉴(보류)에서 그대로 쓸 수 있음
+- 실제 버킷에 `status` 한 번 실행함 (11.8 MB, verify-test 2.9 MB 포함)
+
 ### 3-2f. 보류 중인 요청
 
 - 모바일 삭제: [MOBILE_DELETE_PLAN.md](MOBILE_DELETE_PLAN.md) (방식 A/B/C, 사용자 선택 대기)
